@@ -7,6 +7,7 @@ import com.paper.polish.config.AiConfig;
 import com.paper.polish.dto.*;
 import com.paper.polish.entity.Paper;
 import com.paper.polish.entity.Paragraph;
+import com.paper.polish.service.DailyUsageService;
 import com.paper.polish.service.DocumentService;
 import com.paper.polish.service.PaperService;
 import com.paper.polish.service.ParagraphService;
@@ -16,6 +17,7 @@ import com.paper.polish.util.WordUtil;
 import com.paper.polish.util.WordWriteUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -35,57 +37,104 @@ public class DocumentServiceImpl implements DocumentService {
     private final MinioUtil minioUtil;
     private final AiConfig aiConfig;
     private final LibreOfficeUtil libreOfficeUtil;
+    private final TaskExecutor taskExecutor;
+    private final DailyUsageService dailyUsageService;
 
     @Override
-    public UploadResultDTO upload(MultipartFile file) {
+    public UploadResultDTO upload(MultipartFile file, String deviceId) {
+        int remaining = dailyUsageService.getRemaining(deviceId);
+        if (remaining <= 0) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        boolean consumed = dailyUsageService.consume(deviceId);
+        if (!consumed) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        long totalStartTime = System.currentTimeMillis();
         String paperId = IdUtil.fastSimpleUUID();
         String originalPath = "original/" + paperId + "/" + file.getOriginalFilename();
+        log.info("========== 开始处理文档: {} ==========", file.getOriginalFilename());
 
+        // 1. 上传文件到 MinIO（必须同步）
+        long uploadStartTime = System.currentTimeMillis();
         try {
             minioUtil.upload(originalPath, file.getInputStream(), file.getSize(), file.getContentType());
+            log.info("[1/4] 文件上传 MinIO 完成，耗时: {}ms", System.currentTimeMillis() - uploadStartTime);
         } catch (Exception e) {
             throw new RuntimeException("文件上传失败: " + e.getMessage(), e);
         }
 
+        // 2. 插入 Paper 记录（同步）
         Paper paper = new Paper();
         paper.setId(paperId);
         paper.setOriginalFilePath(originalPath);
-        paper.setStatus("uploaded");
+        paper.setStatus("parsed");
         paper.setParagraphCount(0);
         paper.setRewrittenCount(0);
         paperService.save(paper);
+        log.info("[2/4] 数据库记录 Paper 完成");
 
+        // 3. 解析文档内容 + 图片上传 + 批量插入（同步）
+        long parseStartTime = System.currentTimeMillis();
+        final long[] imageUploadTime = {0};
         try (InputStream is = minioUtil.download(originalPath)) {
             List<Paragraph> paragraphs = WordUtil.parseParagraphs(is, paperId,
                     (pid, imageName, data, contentType) -> {
                         String imagePath = "images/" + pid + "/" + imageName;
+                        long imgStart = System.currentTimeMillis();
                         try {
                             minioUtil.upload(imagePath, new ByteArrayInputStream(data), data.length, contentType);
+                            imageUploadTime[0] += System.currentTimeMillis() - imgStart;
                             return minioUtil.getPresignedUrl(imagePath);
                         } catch (Exception e) {
                             log.error("图片上传失败: {}", e.getMessage());
                             return null;
                         }
                     });
+
+            log.info("[3/4] 解析文档内容完成 ({} 段落)，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - parseStartTime);
+            log.info("[3/4-1] 图片上传完成，耗时: {}ms", imageUploadTime[0]);
+
+            // 批量插入段落
+            long dbBatchStartTime = System.currentTimeMillis();
             paragraphService.saveBatch(paragraphs);
+            log.info("[DB] 批量插入 Paragraphs ({} 条) 完成，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - dbBatchStartTime);
 
             paper.setParagraphCount(paragraphs.size());
-            paper.setStatus("parsed");
             paperService.updateById(paper);
         } catch (Exception e) {
             throw new RuntimeException("文档解析失败: " + e.getMessage(), e);
         }
 
-        try (InputStream is = minioUtil.download(originalPath)) {
-            byte[] docxBytes = is.readAllBytes();
-            byte[] pdfBytes = libreOfficeUtil.convertToPdf(docxBytes, file.getOriginalFilename());
-            String pdfPath = "pdf/" + paperId + "/" + file.getOriginalFilename().replaceAll("\\.(?i)docx$", ".pdf");
-            minioUtil.upload(pdfPath, new ByteArrayInputStream(pdfBytes), pdfBytes.length, "application/pdf");
-            paper.setPdfPath(pdfPath);
-            paperService.updateById(paper);
-        } catch (Exception e) {
-            log.warn("PDF 转换失败，不影响主流程: {}", e.getMessage());
-        }
+        // 4. PDF 转换（异步，不阻塞主流程）
+        String fileName = file.getOriginalFilename();
+        taskExecutor.execute(() -> {
+            long pdfStartTime = System.currentTimeMillis();
+            try (InputStream is = minioUtil.download(originalPath)) {
+                long docxDownloadStart = System.currentTimeMillis();
+                byte[] docxBytes = is.readAllBytes();
+                log.info("[4/4-1] 下载 DOCX 文件完成，耗时: {}ms", System.currentTimeMillis() - docxDownloadStart);
+
+                long convertStart = System.currentTimeMillis();
+                byte[] pdfBytes = libreOfficeUtil.convertToPdf(docxBytes, fileName);
+                log.info("[4/4-2] LibreOffice PDF 转换完成，耗时: {}ms", System.currentTimeMillis() - convertStart);
+
+                long pdfUploadStart = System.currentTimeMillis();
+                String pdfPath = "pdf/" + paperId + "/" + fileName.replaceAll("\\.(?i)docx$", ".pdf");
+                minioUtil.upload(pdfPath, new ByteArrayInputStream(pdfBytes), pdfBytes.length, "application/pdf");
+                log.info("[4/4-3] 上传 PDF 到 MinIO 完成，耗时: {}ms", System.currentTimeMillis() - pdfUploadStart);
+
+                paper.setPdfPath(pdfPath);
+                paperService.updateById(paper);
+                log.info("[4/4] PDF 转换与上传完成，总耗时: {}ms", System.currentTimeMillis() - pdfStartTime);
+            } catch (Exception e) {
+                log.warn("PDF 转换失败，不影响主流程: {}", e.getMessage());
+            }
+        });
+
+        log.info("========== 文档处理完成，总耗时: {}ms ==========", System.currentTimeMillis() - totalStartTime);
 
         UploadResultDTO result = new UploadResultDTO();
         result.setPaperId(paperId);
@@ -127,7 +176,17 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public RewriteResultDTO rewriteParagraph(String paperId, String paragraphId, RewriteRequestDTO request) {
+    public RewriteResultDTO rewriteParagraph(String paperId, String paragraphId, String text, String deviceId) {
+        int remaining = dailyUsageService.getRemaining(deviceId);
+        if (remaining <= 0) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        boolean consumed = dailyUsageService.consume(deviceId);
+        if (!consumed) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
         Paragraph paragraph = paragraphService.getById(paragraphId);
         if (paragraph == null || !paragraph.getPaperId().equals(paperId)) {
             throw new IllegalArgumentException("段落不存在");
@@ -136,9 +195,7 @@ public class DocumentServiceImpl implements DocumentService {
             throw new IllegalArgumentException("该段落不允许润色");
         }
 
-        String sourceText = request != null && request.getText() != null
-                ? request.getText()
-                : paragraph.getOriginalText();
+        String sourceText = (text != null && !text.isEmpty()) ? text : paragraph.getOriginalText();
 
         String rewrittenText = callAiRewrite(sourceText);
 

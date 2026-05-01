@@ -4,9 +4,16 @@ server:
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/paper_polish?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://198.46.193.170:3306/paper_polish?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&tcpKeepAlive=true&connectTimeout=30000&socketTimeout=60000
     username: root
-    password: 123456
+    password: root123
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
   servlet:
     multipart:
       max-file-size: 50MB
@@ -14,26 +21,32 @@ spring:
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
+  task:
+    execution:
+      pool:
+        core-size: 10
+        max-size: 20
+        queue-capacity: 100
 
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     db-config:
       id-type: assign_id
       logic-delete-field: deleted
-      logic-delete-value: 1
+      logic-delete-value: 0
       logic-not-delete-value: 0
 
 minio:
-  endpoint: http://localhost:9000
+  endpoint: https://minio.devslow.ccwu.cc
   access-key: admin
   secret-key: admin123456
   bucket: paper-polish
 
 ai:
   openai:
-    base-url: 
-    api-key: 
-    model: 
+    base-url:
+    api-key:
+    model:

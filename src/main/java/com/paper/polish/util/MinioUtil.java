@@ -2,6 +2,7 @@ package com.paper.polish.util;
 
 import com.paper.polish.config.MinioConfig;
 import io.minio.*;
+import io.minio.http.Method;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -63,6 +64,7 @@ public class MinioUtil {
     public String getPresignedUrl(String objectName) {
         try {
             return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+                    .method(Method.GET)
                     .bucket(minioConfig.getBucket())
                     .object(objectName)
                     .expiry(60 * 60)

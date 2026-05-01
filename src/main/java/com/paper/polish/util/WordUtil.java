@@ -141,7 +141,7 @@ public class WordUtil {
                         String url = uploader.uploadImage(paperId, imageName, data, contentType);
                         if (url != null) urls.add(url);
                     } catch (Exception e) {
-                        log.warn("上传嵌入图片失败: {}", e.getMessage());
+                        log.trace("上传嵌入图片失败: {}", e.getMessage());
                     }
                 }
             }
@@ -156,7 +156,7 @@ public class WordUtil {
                 urls.addAll(inlineUrls);
             }
         } catch (Exception e) {
-            log.warn("提取图片失败: {}", e.getMessage());
+            log.trace("提取图片失败: {}", e.getMessage());
         }
         return urls;
     }
@@ -237,11 +237,11 @@ public class WordUtil {
                     String url = uploader.uploadImage(paperId, imageName, imageData, contentType);
                     if (url != null) urls.add(url);
                 } catch (Exception e) {
-                    log.warn("提取 drawing 图片失败: {}", e.getMessage());
+                    log.trace("提取 drawing 图片失败: {}", e.getMessage());
                 }
             }
         } catch (Exception e) {
-            log.warn("提取 drawing 图片失败: {}", e.getMessage());
+            log.trace("提取 drawing 图片失败: {}", e.getMessage());
         }
         return urls;
     }
@@ -291,7 +291,7 @@ public class WordUtil {
                     String url = uploader.uploadImage(paperId, imageName, imageData, contentType);
                     if (url != null) urls.add(url);
                 } catch (Exception e) {
-                    log.warn("提取 inline 图片失败: {}", e.getMessage());
+                    log.trace("提取 inline 图片失败: {}", e.getMessage());
                 }
             }
 
@@ -347,12 +347,12 @@ public class WordUtil {
                         String url = uploader.uploadImage(paperId, imageName, imageData, contentType);
                         if (url != null) urls.add(url);
                     } catch (Exception e) {
-                        log.warn("提取 pict 图片失败: {}", e.getMessage());
+                        log.trace("提取 pict 图片失败: {}", e.getMessage());
                     }
                 }
             }
         } catch (Exception e) {
-            log.warn("提取 inline/vml 图片失败: {}", e.getMessage());
+            log.trace("提取 inline/vml 图片失败: {}", e.getMessage());
         }
         return urls;
     }

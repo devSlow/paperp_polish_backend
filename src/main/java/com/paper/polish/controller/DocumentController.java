@@ -18,7 +18,8 @@ public class DocumentController {
     private final DocumentService documentService;
 
     @PostMapping("/upload")
-    public Result<UploadResultDTO> upload(@RequestParam("file") MultipartFile file) {
+    public Result<UploadResultDTO> upload(@RequestParam("file") MultipartFile file,
+                                          @RequestParam(value = "deviceId", required = false) String deviceId) {
         if (file.isEmpty()) {
             return Result.fail(400, "文件不能为空");
         }
@@ -26,7 +27,10 @@ public class DocumentController {
         if (filename == null || !filename.toLowerCase().endsWith(".docx")) {
             return Result.fail(400, "仅支持 .docx 格式文件");
         }
-        return Result.ok(documentService.upload(file));
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "设备ID不能为空");
+        }
+        return Result.ok(documentService.upload(file, deviceId));
     }
 
     @GetMapping("/{paperId}")
@@ -42,8 +46,22 @@ public class DocumentController {
     @PostMapping("/{paperId}/paragraph/{paragraphId}/rewrite")
     public Result<RewriteResultDTO> rewriteParagraph(@PathVariable String paperId,
                                                       @PathVariable String paragraphId,
-                                                      @RequestBody(required = false) RewriteRequestDTO request) {
-        return Result.ok(documentService.rewriteParagraph(paperId, paragraphId, request));
+                                                      @RequestBody RewriteRequest request) {
+        String deviceId = request.getDeviceId();
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "设备ID不能为空");
+        }
+        return Result.ok(documentService.rewriteParagraph(paperId, paragraphId, request.getText(), deviceId));
+    }
+
+    public static class RewriteRequest {
+        private String deviceId;
+        private String text;
+
+        public String getDeviceId() { return deviceId; }
+        public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
+        public String getText() { return text; }
+        public void setText(String text) { this.text = text; }
     }
 
     @PostMapping("/{paperId}/paragraph/{paragraphId}/accept")
