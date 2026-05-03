@@ -47,6 +47,6 @@ minio:
 
 ai:
   openai:
-    base-url:
-    api-key:
-    model:
+    base-url: https://api.killerbest.com/v1
+    api-key: sk-DRWeOszX4PMtt4gOVSSoY3T4GHHW1ZFB0PptyiVtPy2rRCt4
+    model: g2api-grok-4.1-fast

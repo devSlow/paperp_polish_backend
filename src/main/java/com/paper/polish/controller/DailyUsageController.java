@@ -1,6 +1,8 @@
 package com.paper.polish.controller;
 
+import com.paper.polish.common.Result;
 import com.paper.polish.service.DailyUsageService;
+import com.paper.polish.service.RedeemResult;
 import com.paper.polish.service.RedeemService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -17,19 +19,19 @@ public class DailyUsageController {
     private final RedeemService redeemService;
 
     @GetMapping("/remain")
-    public Map<String, Integer> getRemaining(@RequestParam String deviceId) {
+    public Result<Map<String, Integer>> getRemaining(@RequestParam String deviceId) {
         int remain = dailyUsageService.getRemaining(deviceId);
         Map<String, Integer> result = new HashMap<>();
         result.put("remain", remain);
-        return result;
+        return Result.ok(result);
     }
 
     @PostMapping("/redeem")
-    public Map<String, Object> redeem(@RequestBody RedeemRequest request) {
+    public Result<Map<String, Object>> redeem(@RequestBody RedeemRequest request) {
         String deviceId = request.getDeviceId();
         String code = request.getCode();
 
-        RedeemService.RedeemResult result = redeemService.redeem(code, deviceId);
+        RedeemResult result = redeemService.redeem(code, deviceId);
 
         Map<String, Object> map = new HashMap<>();
         map.put("success", result.isSuccess());
@@ -37,7 +39,7 @@ public class DailyUsageController {
         if (result.isSuccess()) {
             map.put("remain", dailyUsageService.getRemaining(deviceId));
         }
-        return map;
+        return Result.ok(map);
     }
 
     public static class UsageRequest {

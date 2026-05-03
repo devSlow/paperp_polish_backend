@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.paper.polish.entity.RedeemCode;
 import com.paper.polish.mapper.RedeemCodeMapper;
 import com.paper.polish.service.DailyUsageService;
+import com.paper.polish.service.RedeemResult;
 import com.paper.polish.service.RedeemService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;

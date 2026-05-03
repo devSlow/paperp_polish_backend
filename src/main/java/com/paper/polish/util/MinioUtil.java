@@ -67,7 +67,7 @@ public class MinioUtil {
                     .method(Method.GET)
                     .bucket(minioConfig.getBucket())
                     .object(objectName)
-                    .expiry(60 * 60)
+                    .expiry(60 * 60 * 24)
                     .build());
         } catch (Exception e) {
             throw new RuntimeException("获取下载链接失败: " + e.getMessage(), e);

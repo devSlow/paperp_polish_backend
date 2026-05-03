@@ -18,8 +18,6 @@ public class Paper {
 
     private String latestFilePath;
 
-    private String pdfPath;
-
     private String status;
 
     private Integer paragraphCount;

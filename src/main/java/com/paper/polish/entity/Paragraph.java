@@ -40,6 +40,8 @@ public class Paragraph {
 
     private String styleData;
 
+    private String htmlContent;
+
     private Boolean canRewrite;
 
     private String status;

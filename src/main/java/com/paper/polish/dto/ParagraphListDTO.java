@@ -24,6 +24,7 @@ public class ParagraphListDTO {
         private String imageUrl;
         private String tableData;
         private String styleData;
+        private String htmlContent;
         private Boolean canRewrite;
         private String status;
     }
