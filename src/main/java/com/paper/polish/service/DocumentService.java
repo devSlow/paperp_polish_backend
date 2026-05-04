@@ -3,6 +3,8 @@ package com.paper.polish.service;
 import com.paper.polish.dto.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletRequest;
+
 public interface DocumentService {
 
     UploadResultDTO upload(MultipartFile file, String deviceId);
@@ -26,4 +28,6 @@ public interface DocumentService {
     void rejectParagraph(String paperId, String paragraphId);
 
     ExportResultDTO exportDocument(String paperId);
+
+    PptGenerateResultDTO generatePpt(String paperId, String deviceId, HttpServletRequest httpRequest);
 }

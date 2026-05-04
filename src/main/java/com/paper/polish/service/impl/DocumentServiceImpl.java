@@ -12,6 +12,7 @@ import com.paper.polish.service.DocumentService;
 import com.paper.polish.service.PaperService;
 import com.paper.polish.service.ParagraphService;
 import com.paper.polish.util.MinioUtil;
+import com.paper.polish.util.PptGenerateUtil;
 import com.paper.polish.util.WordUtil;
 import com.paper.polish.util.WordWriteUtil;
 import lombok.RequiredArgsConstructor;
@@ -20,10 +21,16 @@ import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletRequest;
+
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -85,37 +92,47 @@ public class DocumentServiceImpl implements DocumentService {
         paperService.save(paper);
         log.info("[2/4] 数据库记录 Paper 完成");
 
-        // 3. 解析文档内容 + 图片上传 + 批量插入（同步，直接用内存字节流）
+        // 3. 解析文档内容 + 图片异步上传 + 批量插入
+        // 优化：图片上传改为完全异步，不阻塞主线程，主流程只负责获取 URL 并入库
         long parseStartTime = System.currentTimeMillis();
-        final long[] imageUploadTime = {0};
+        
+        // 复用全局线程池处理图片上传，避免创建过多线程
+        final WordUtil.ImageUploader imgCallback = (pid, imageName, data, contentType) -> {
+            String imagePath = "images/" + pid + "/" + imageName;
+            
+            // 1. 立即返回 URL (乐观策略，假设上传会成功)
+            // 如果 getPresignedUrl 较慢，可考虑改为直接拼接 URL：minioEndpoint + "/" + bucket + "/" + imagePath
+            String url = minioUtil.getPresignedUrl(imagePath);
+            
+            // 2. 后台异步上传实体
+            taskExecutor.execute(() -> {
+                try {
+                    minioUtil.upload(imagePath, new ByteArrayInputStream(data), data.length, contentType);
+                } catch (Exception e) {
+                    log.error("图片上传失败 {}: {}", imageName, e.getMessage());
+                }
+            });
+            
+            return url;
+        };
+
+        List<Paragraph> paragraphs;
         try (InputStream is = new ByteArrayInputStream(docxBytes)) {
-            List<Paragraph> paragraphs = WordUtil.parseParagraphs(is, paperId,
-                    (pid, imageName, data, contentType) -> {
-                        String imagePath = "images/" + pid + "/" + imageName;
-                        long imgStart = System.currentTimeMillis();
-                        try {
-                            minioUtil.upload(imagePath, new ByteArrayInputStream(data), data.length, contentType);
-                            imageUploadTime[0] += System.currentTimeMillis() - imgStart;
-                            return minioUtil.getPresignedUrl(imagePath);
-                        } catch (Exception e) {
-                            log.error("图片上传失败: {}", e.getMessage());
-                            return null;
-                        }
-                    });
-
-            log.info("[3/4] 解析文档内容完成 ({} 段落)，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - parseStartTime);
-            log.info("[3/4-1] 图片上传完成，耗时: {}ms", imageUploadTime[0]);
-
-            // 批量插入段落
-            long dbBatchStartTime = System.currentTimeMillis();
-            paragraphService.saveBatch(paragraphs);
-            log.info("[DB] 批量插入 Paragraphs ({} 条) 完成，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - dbBatchStartTime);
-
-            paper.setParagraphCount(paragraphs.size());
-            paperService.updateById(paper);
+            paragraphs = WordUtil.parseParagraphs(is, paperId, imgCallback);
         } catch (Exception e) {
             throw new RuntimeException("文档解析失败: " + e.getMessage(), e);
         }
+
+        log.info("[3/4] 解析文档内容完成 ({} 段落)，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - parseStartTime);
+        log.info("[3/4-1] 图片已提交后台异步上传，不阻塞主流程");
+
+        // 4. 批量插入段落：配合 rewriteBatchedStatements=true 极速入库
+        long dbBatchStartTime = System.currentTimeMillis();
+        paragraphService.saveBatch(paragraphs, 1000);
+        log.info("[DB] 批量插入 Paragraphs ({} 条) 完成，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - dbBatchStartTime);
+
+        paper.setParagraphCount(paragraphs.size());
+        paperService.updateById(paper);
 
         log.info("========== 文档处理完成，总耗时: {}ms ==========", System.currentTimeMillis() - totalStartTime);
 
@@ -716,6 +733,383 @@ public class DocumentServiceImpl implements DocumentService {
         Paper paper = paperService.getById(paperId);
         paper.setRewrittenCount((int) count);
         paperService.updateById(paper);
+    }
+
+    @Override
+    public PptGenerateResultDTO generatePpt(String paperId, String deviceId, HttpServletRequest httpRequest) {
+        int remaining = dailyUsageService.getRemaining(deviceId);
+        if (remaining <= 0) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        boolean consumed = dailyUsageService.consume(deviceId);
+        if (!consumed) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        try {
+            return doGeneratePpt(paperId, deviceId, httpRequest);
+        } catch (Exception e) {
+            log.warn("[PPT生成] 生成失败或客户端断开，回退次数: deviceId={}", deviceId);
+            dailyUsageService.rollback(deviceId);
+            throw e;
+        }
+    }
+
+    private void checkClientConnected(HttpServletRequest request) {
+        try {
+            if (request.getInputStream().available() >= 0) {}
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("客户端已断开连接");
+        }
+    }
+
+    private PptGenerateResultDTO doGeneratePpt(String paperId, String deviceId, HttpServletRequest httpRequest) {
+        int remaining = dailyUsageService.getRemaining(deviceId);
+        if (remaining <= 0) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        boolean consumed = dailyUsageService.consume(deviceId);
+        if (!consumed) {
+            throw new RuntimeException("今日免费次数已用完，请先兑换");
+        }
+
+        Paper paper = paperService.getById(paperId);
+        if (paper == null) {
+            throw new IllegalArgumentException("论文不存在: " + paperId);
+        }
+
+        List<Paragraph> paragraphs = paragraphService.list(new LambdaQueryWrapper<Paragraph>()
+                .eq(Paragraph::getPaperId, paperId)
+                .orderByAsc(Paragraph::getParagraphIndex));
+
+        StringBuilder sb = new StringBuilder();
+        for (Paragraph p : paragraphs) {
+            String text = p.getCurrentText() != null ? p.getCurrentText() : p.getOriginalText();
+            if (text != null && !text.isEmpty() && p.getCanRewrite() != null && p.getCanRewrite()) {
+                sb.append(text).append("\n\n");
+            }
+        }
+
+        if (sb.length() == 0) {
+            throw new RuntimeException("论文中无可用的正文内容用于生成 PPT");
+        }
+
+        String paperText = sb.toString();
+        String fileName = new File(paper.getOriginalFilePath()).getName();
+        log.info("[PPT生成-SVG] 论文ID: {}, 正文长度: {} 字, 文件名: {}", paperId, paperText.length(), fileName);
+
+        log.info("[PPT生成-SVG] 正在提取论文要点...");
+        checkClientConnected(httpRequest);
+        String outline = extractPaperOutline(paperText, fileName);
+        log.info("[PPT生成-SVG] 提取完成，要点长度: {} 字", outline.length());
+
+        checkClientConnected(httpRequest);
+        List<String> svgSlides = generatePptPagesFromOutline(outline, fileName);
+        if (svgSlides.isEmpty()) {
+            throw new RuntimeException("PPT 生成失败：AI 未返回有效的 SVG 幻灯片");
+        }
+
+        log.info("[PPT生成-SVG] AI 生成完成，共 {} 页 SVG 幻灯片", svgSlides.size());
+
+        byte[] pptxBytes;
+        try {
+            pptxBytes = com.paper.polish.util.SvgPptxConverter.convertToPptx(svgSlides, fileName);
+        } catch (Exception e) {
+            log.error("[PPT生成-SVG] SVG 转 PPTX 失败: {}", e.getMessage(), e);
+            throw new RuntimeException("PPT 生成失败: " + e.getMessage(), e);
+        }
+
+        String pptxPath = "pptx/" + paperId + "/" + System.currentTimeMillis() + ".pptx";
+        try {
+            minioUtil.upload(pptxPath, new java.io.ByteArrayInputStream(pptxBytes),
+                    pptxBytes.length, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        } catch (Exception e) {
+            throw new RuntimeException("PPT 上传 MinIO 失败: " + e.getMessage(), e);
+        }
+
+        String downloadUrl = minioUtil.getPresignedUrl(pptxPath);
+
+        PptGenerateResultDTO result = new PptGenerateResultDTO();
+        result.setPaperId(paperId);
+        result.setDownloadUrl(downloadUrl);
+        result.setSlideCount(svgSlides.size());
+
+        log.info("[PPT生成-SVG] 完成，共 {} 页，下载链接有效期 24 小时", svgSlides.size());
+        return result;
+    }
+
+    private static final String PROMPT_PPT_SVG = "你是一个专业的 AI 演示文稿设计师。请将以下论文内容转化为一份精美的学术 PPT，输出为 SVG 格式的幻灯片。\n\n"
+            + "=== 技术规范 ===\n"
+            + "画布尺寸：1280x720（PPT 16:9 宽屏）\n"
+            + "每个幻灯片必须是一个完整的 <svg> 元素，包含 viewBox=\"0 0 1280 720\"\n"
+            + "每个幻灯片前后用 <!-- SLIDE_START --> 和 <!-- SLIDE_END --> 包裹\n\n"
+            + "=== 允许的 SVG 元素 ===\n"
+            + "- <svg> 根元素（必须含 viewBox）\n"
+            + "- <rect> 矩形（可用 rx/ry 做圆角）\n"
+            + "- <ellipse> 椭圆（含 cx,cy,rx,ry）\n"
+            + "- <circle> 圆形（含 cx,cy,r）\n"
+            + "- <line> 线条（含 x1,y1,x2,y2）\n"
+            + "- <polygon> 多边形（含 points）\n"
+            + "- <path> 路径（仅用 M,L,Z,H,V 命令）\n"
+            + "- <text> 文本（含 x,y,font-size,font-family,fill,font-weight）\n"
+            + "- <tspan> 行内文本样式（可用 dy 换行）\n"
+            + "- <g> 元素分组（用 id 命名，如 id=\"header\", id=\"card-1\"）\n"
+            + "- <defs> 定义区（渐变、阴影）\n"
+            + "- transform=\"translate(x,y) scale(s) rotate(deg)\"\n\n"
+            + "=== 严格禁止 ===\n"
+            + "- <style> 标签 / class 属性 / 外部 CSS\n"
+            + "- <mask> / <filter> / <animate> / <script>\n"
+            + "- <foreignObject> / <symbol> / <use>\n"
+            + "- rgba() 颜色（改用 fill=\"#HEX\" + fill-opacity=\"0.x\"）\n"
+            + "- 组 opacity（改为每个子元素单独设 fill-opacity）\n"
+            + "- @font-face 自定义字体\n"
+            + "- HTML 实体（&nbsp; 等，用 Unicode 字符本身）\n\n"
+            + "=== 设计规则 ===\n"
+            + "1. 配色方案：学术蓝色调 — 主色 #1E3A5F，强调色 #2E75B6，正文 #333333，背景 #F8FAFC\n"
+            + "2. 字体：标题用 \"Microsoft YaHei\" 加粗，正文用 \"Microsoft YaHei\" 或 \"SimSun\"\n"
+            + "3. 封面：深色渐变背景 + 白色大标题 + 副标题 + 装饰元素\n"
+            + "4. 内容页：浅色背景 + 标题栏 + 内容卡片 + 图标装饰\n"
+            + "5. 要点页：每条要点前加彩色圆点或小图标\n"
+            + "6. 数据页：用简单柱状图或饼图展示数据（<rect> 或 <path> 绘制）\n"
+            + "7. 结尾页：与封面风格一致的深色背景 + \"谢谢观看\"\n\n"
+            + "=== 幻灯片结构（20-25 页）===\n"
+            + "第1页：封面（论文标题、作者、日期）\n"
+            + "第2页：目录\n"
+            + "第3-4页：研究背景与问题\n"
+            + "第5-6页：研究意义\n"
+            + "第7-8页：研究现状\n"
+            + "第9-11页：研究方法\n"
+            + "第12-15页：核心内容/实验/分析\n"
+            + "第16-18页：结果与讨论\n"
+            + "第19-20页：结论与展望\n"
+            + "第21页：参考文献（选关键引用）\n"
+            + "第22页：致谢\n"
+            + "第23页：结尾（谢谢观看）\n"
+            + "（可根据论文内容适当增减，保持 20-25 页）\n\n"
+            + "=== 内容要求 ===\n"
+            + "- 从论文中提取关键信息，每条要点简洁精炼（不超过 25 字）\n"
+            + "- 保持学术论文的专业性和逻辑性\n"
+            + "- 数据和结论必须忠实于原文\n"
+            + "- 适当使用图表、图标增强可视化\n\n"
+            + "=== 输出格式 ===\n"
+            + "直接输出 SVG 代码，每页用注释分隔：\n"
+            + "<!-- SLIDE_START -->\n"
+            + "<svg viewBox=\"0 0 1280 720\" ...>...</svg>\n"
+            + "<!-- SLIDE_END -->\n\n"
+            + "不要输出任何解释文字，只输出 SVG 代码。";
+
+    private static final String PROMPT_PPT_SVG_BATCH = "你是一个专业的 AI 演示文稿设计师。请继续生成学术 PPT 的第 {START_SLIDE} 到 第 {END_SLIDE} 页。\n\n"
+            + "=== 技术规范 ===\n"
+            + "画布尺寸：1280x720（PPT 16:9 宽屏）\n"
+            + "每个幻灯片必须是一个完整的 <svg> 元素，包含 viewBox=\"0 0 1280 720\"\n"
+            + "每个幻灯片前后用 <!-- SLIDE_START --> 和 <!-- SLIDE_END --> 包裹\n\n"
+            + "=== 字号与间距规范（严格执行） ===\n"
+            + "1. 主标题: font-size=\"48\"\n"
+            + "2. 副标题/卡片标题: font-size=\"36\"\n"
+            + "3. 正文要点: font-size=\"28\"\n"
+            + "4. 辅助说明/引用: font-size=\"22\"\n"
+            + "5. 行间距：同一文本块内，相邻两行 <text> 的 y 坐标差值必须 >= 字体大小 * 1.5\n"
+            + "6. 卡片间距：卡片之间垂直间距至少 40px，水平间距至少 40px\n"
+            + "7. 绝对禁止使用小于 20 的字号！确保 PPT 在大屏幕上清晰可读\n"
+            + "8. 避免重叠：任何两个元素的边界框（bounding box）不得相互重叠\n\n"
+            + "=== 允许的 SVG 元素 ===\n"
+            + "- <rect>, <ellipse>, <circle>, <line>, <polygon>, <path> (仅 M,L,Z,H,V)\n"
+            + "- <text>, <tspan>, <g>, <defs>, transform\n\n"
+            + "=== 严格禁止 ===\n"
+            + "- <style> / class / 外部 CSS / <mask> / <filter> / <animate> / <foreignObject>\n"
+            + "- rgba() 颜色（改用 fill=\"#HEX\" + fill-opacity=\"0.x\"）\n\n"
+            + "=== 设计规则 ===\n"
+            + "1. 配色方案：学术蓝色调 — 主色 #1E3A5F，强调色 #2E75B6，正文 #333333，背景 #F8FAFC\n"
+            + "2. 保持页面整洁，留白充足，重点突出\n"
+            + "3. 内容页：浅色背景 + 标题栏 + 内容卡片 + 图标装饰\n"
+            + "4. 结尾页 (第22页)：深色背景 + \"谢谢观看\"\n"
+            + "5. 简化 SVG 路径，避免使用过于复杂的装饰性图形，以保持代码精简\n\n"
+            + "=== 风格参考 ===\n"
+            + "{STYLE_REF}\n\n"
+            + "=== 输出格式 ===\n"
+            + "直接输出 SVG 代码，每页用注释分隔：\n"
+            + "<!-- SLIDE_START -->\n"
+            + "<svg viewBox=\"0 0 1280 720\" ...>...</svg>\n"
+            + "<!-- SLIDE_END -->\n\n"
+            + "不要输出任何解释文字，只输出 SVG 代码。";
+
+    private static final String PROMPT_EXTRACT_OUTLINE = "你是一个专业的学术编辑。请阅读以下论文内容，提取核心要点，整理成一份用于制作 22 页学术 PPT 的结构化大纲。\n\n"
+            + "=== 大纲要求 ===\n"
+            + "1. 包含：研究背景、问题、意义、现状、方法、核心内容/实验、结果、结论等\n"
+            + "2. 每一页标注清晰的标题和 3-4 条简要要点（每条不超过 20 字）\n"
+            + "3. 输出为纯文本，层级分明，不要输出其他内容\n\n"
+            + "论文内容：\n";
+
+    private String extractPaperOutline(String text, String title) {
+        String truncated;
+        if (text.length() > 15000) {
+            truncated = text.substring(0, 7500) + "\n\n...[中间内容省略]...\n\n" + text.substring(text.length() - 7500);
+        } else {
+            truncated = text;
+        }
+        try {
+            return callAi(PROMPT_EXTRACT_OUTLINE, "论文标题：" + title + "\n\n" + truncated, 0.3);
+        } catch (Exception e) {
+            log.warn("[PPT生成-SVG] 提取要点失败，使用原文截断: {}", e.getMessage());
+            return truncated;
+        }
+    }
+
+    private List<String> generatePptPagesFromOutline(String outline, String title) {
+        // 1. 优先生成封面（第 1 页），用于提取设计风格
+        log.info("[PPT生成-SVG] 正在生成封面 (第 1 页) 以提取风格...");
+        String coverSvg = "";
+        try {
+            coverSvg = callAiGenerateSvgBatchFromOutline(outline, title, 1, 1, "");
+        } catch (Exception e) {
+            log.error("封面生成失败: {}", e.getMessage());
+        }
+        
+        List<String> slides = parseSvgSlides(coverSvg);
+        String styleRef = "";
+        if (!slides.isEmpty()) {
+            // 提取前 1000 字符作为风格参考（通常包含 <defs> 和背景色）
+            styleRef = slides.get(0).substring(0, Math.min(1000, slides.get(0).length()));
+            log.info("[PPT生成-SVG] 封面生成成功，提取风格参考");
+        } else {
+            log.warn("[PPT生成-SVG] 封面生成失败或为空，后续页面将使用默认风格");
+        }
+
+        // 2. 并行生成剩余页面
+        Map<Integer, List<String>> batchMap = new ConcurrentHashMap<>();
+        int targetSlides = 22;
+        int batchSize = 6; // 增大批次，减少请求次数
+        int currentSlide = 2;
+        
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        
+        while (currentSlide <= targetSlides) {
+            int endSlide = Math.min(currentSlide + batchSize - 1, targetSlides);
+            final int start = currentSlide;
+            final int end = endSlide;
+            final String ref = styleRef;
+            
+            // 使用线程池并行执行
+            futures.add(CompletableFuture.runAsync(() -> {
+                log.info("[PPT生成-SVG] 开始并行生成第 {}-{} 页", start, end);
+                boolean success = false;
+                int retries = 0;
+                while (!success && retries < 3) { // 增加重试机制应对 504
+                    try {
+                        String svg = callAiGenerateSvgBatchFromOutline(outline, title, start, end, ref);
+                        List<String> parsed = parseSvgSlides(svg);
+                        if (!parsed.isEmpty()) {
+                            batchMap.put(start, parsed);
+                            log.info("[PPT生成-SVG] 并行批次 {}-{} 成功，获取 {} 页", start, end, parsed.size());
+                            success = true;
+                        } else {
+                            log.warn("[PPT生成-SVG] 并行批次 {}-{} 解析为空，重试...", start, end);
+                            retries++;
+                        }
+                    } catch (Exception e) {
+                        log.error("[PPT生成-SVG] 并行批次 {}-{} 异常: {}", start, end, e.getMessage());
+                        retries++;
+                    }
+                }
+            }, taskExecutor));
+            
+            currentSlide = endSlide + 1;
+        }
+        
+        // 等待所有并行任务完成
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            log.error("[PPT生成-SVG] 等待并行任务超时或异常: {}", e.getMessage());
+        }
+        
+        // 按顺序合并结果
+        List<String> finalSlides = new ArrayList<>(slides); // 包含封面
+        List<Integer> keys = new ArrayList<>(batchMap.keySet());
+        Collections.sort(keys);
+        
+        for (Integer key : keys) {
+            finalSlides.addAll(batchMap.get(key));
+        }
+        
+        log.info("[PPT生成-SVG] 全部页面生成完成，共 {} 页", finalSlides.size());
+        return finalSlides;
+    }
+
+    private String callAiGenerateSvgBatchFromOutline(String outline, String title, int startSlide, int endSlide, String styleRef) {
+        String prompt = PROMPT_PPT_SVG_BATCH
+                .replace("{START_SLIDE}", String.valueOf(startSlide))
+                .replace("{END_SLIDE}", String.valueOf(endSlide))
+                .replace("{STYLE_REF}", styleRef.isEmpty() ? "（无，请根据论文内容自由设计）" : "参考上一页风格：\n" + styleRef.substring(0, Math.min(800, styleRef.length())) + "...");
+
+        String userContent = "论文标题：" + title + "\n\n论文结构化大纲：\n" + outline;
+        return callAi(prompt, userContent, 0.4);
+    }
+
+    private List<String> parseSvgSlides(String svgOutput) {
+        List<String> slides = new java.util.ArrayList<>();
+
+        svgOutput = svgOutput.replaceAll("```xml\\s*", "").replaceAll("```\\s*", "").trim();
+
+        String[] blocks = svgOutput.split("(?=<!--\\s*SLIDE_START\\s*-->)");
+        for (String block : blocks) {
+            int start = block.indexOf("<!--");
+            int end = block.indexOf("<!--", start + 1);
+            if (start == -1) {
+                int svgStart = block.indexOf("<svg");
+                if (svgStart == -1) continue;
+                int svgEnd = block.indexOf("</svg>", svgStart);
+                if (svgEnd == -1) continue;
+                slides.add(block.substring(svgStart, svgEnd + 6).trim());
+                continue;
+            }
+            if (end == -1) end = block.length();
+
+            String content = block.substring(start, end).trim();
+            int svgStart = content.indexOf("<svg");
+            int svgEnd = content.indexOf("</svg>");
+            if (svgStart != -1 && svgEnd != -1) {
+                slides.add(content.substring(svgStart, svgEnd + 6).trim());
+            }
+        }
+
+        if (slides.isEmpty()) {
+            String[] candidates = svgOutput.split("(?=<!-)");
+            for (String block : candidates) {
+                if (!block.contains("<svg")) continue;
+                int htmlStart = block.indexOf("<!--");
+                if (htmlStart != -1 && block.contains("-->")) {
+                    int svgStart = block.indexOf("<svg");
+                    int svgEnd = block.indexOf("</svg>", svgStart);
+                    if (svgStart != -1 && svgEnd != -1) {
+                        slides.add(block.substring(svgStart, svgEnd + 6).trim());
+                    }
+                } else {
+                    int svgStart = block.indexOf("<svg");
+                    while (svgStart != -1) {
+                        int svgEnd = block.indexOf("</svg>", svgStart);
+                        if (svgEnd == -1) break;
+                        slides.add(block.substring(svgStart, svgEnd + 6).trim());
+                        svgStart = block.indexOf("<svg", svgEnd + 6);
+                    }
+                }
+            }
+        }
+
+        if (slides.isEmpty()) {
+            int svgStart = svgOutput.indexOf("<svg");
+            while (svgStart != -1) {
+                int svgEnd = svgOutput.indexOf("</svg>", svgStart);
+                if (svgEnd == -1) break;
+                slides.add(svgOutput.substring(svgStart, svgEnd + 6).trim());
+                svgStart = svgOutput.indexOf("<svg", svgEnd + 6);
+            }
+        }
+
+        log.info("[PPT生成-SVG] 解析到 {} 个 SVG 幻灯片", slides.size());
+        return slides;
     }
 
 }

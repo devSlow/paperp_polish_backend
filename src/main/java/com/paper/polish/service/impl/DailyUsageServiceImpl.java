@@ -53,6 +53,19 @@ public class DailyUsageServiceImpl extends ServiceImpl<DailyUsageMapper, DailyUs
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void rollback(String deviceId) {
+        LocalDate today = LocalDate.now();
+        DailyUsage record = this.getOne(new LambdaQueryWrapper<DailyUsage>()
+                .eq(DailyUsage::getDeviceId, deviceId)
+                .eq(DailyUsage::getUsageDate, today));
+        if (record != null && record.getCount() > 0) {
+            record.setCount(record.getCount() - 1);
+            this.updateById(record);
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void recharge(String deviceId, int amount) {
         LocalDate today = LocalDate.now();
         DailyUsage record = this.getOne(new LambdaQueryWrapper<DailyUsage>()

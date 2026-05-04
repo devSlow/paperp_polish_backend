@@ -6,5 +6,6 @@ import com.paper.polish.entity.DailyUsage;
 public interface DailyUsageService extends IService<DailyUsage> {
     int getRemaining(String deviceId);
     boolean consume(String deviceId);
+    void rollback(String deviceId);
     void recharge(String deviceId, int amount);
 }

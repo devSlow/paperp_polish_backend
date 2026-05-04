@@ -1,5 +1,6 @@
 server:
-  port: 8080
+  port: 9091
+  address: 0.0.0.0
 
 spring:
   datasource:
@@ -12,7 +13,7 @@ spring:
       minimum-idle: 5
       connection-timeout: 30000
       idle-timeout: 600000
-      max-lifetime: 1800000
+      max-lifetime: 600000
       connection-test-query: SELECT 1
   servlet:
     multipart:
@@ -50,3 +51,12 @@ ai:
     base-url: https://api.killerbest.com/v1
     api-key: sk-DRWeOszX4PMtt4gOVSSoY3T4GHHW1ZFB0PptyiVtPy2rRCt4
     model: g2api-grok-4.1-fast
+
+# 微信小程序配置
+wechat:
+  appid: wx100d25899c7b6812
+  secret: 6385971389d6d7a2e150c89ae5860bb4
+
+# JWT 配置
+jwt:
+  secret: paper_polish_jwt_secret_key_2025_!@#$
