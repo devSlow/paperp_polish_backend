@@ -4,7 +4,7 @@ import com.paper.polish.common.JwtUtil;
 import com.paper.polish.common.Result;
 import com.paper.polish.dto.VerifyCodeDTO;
 import com.paper.polish.service.WechatService;
-import com.paper.polish.service.UserUsageService;
+import com.paper.polish.service.DailyUsageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -26,7 +26,7 @@ public class VerifyController {
 
     private final WechatService wechatService;
     private final JwtUtil jwtUtil;
-    private final UserUsageService userUsageService;
+    private final DailyUsageService dailyUsageService;
     private final StringRedisTemplate redisTemplate;
 
     private static final String CODE_KEY_PREFIX = "verify:code:";
@@ -130,7 +130,8 @@ public class VerifyController {
         if (!dto.getCode().equals(code)) {
             return Result.fail(400, "验证码错误");
         }
-        int newRemain = userUsageService.redeem(deviceId, 3);
+        dailyUsageService.recharge(deviceId, 3);
+        int newRemain = dailyUsageService.getRemaining(deviceId);
         deleteFromRedis(sessionId);
         log.info("兑换成功 sessionId={}, deviceId={}, 剩余{}次", sessionId, deviceId, newRemain);
         return Result.ok(Map.of("success", true, "added", 3, "remain", newRemain));

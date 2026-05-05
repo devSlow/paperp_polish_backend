@@ -57,13 +57,13 @@ public class DocumentServiceImpl implements DocumentService {
             throw new RuntimeException("今日免费次数已用完，请先兑换");
         }
 
+        try {
         long totalStartTime = System.currentTimeMillis();
         String paperId = IdUtil.fastSimpleUUID();
         String fileName = file.getOriginalFilename();
         String originalPath = "original/" + paperId + "/" + fileName;
         log.info("========== 开始处理文档: {} ==========", fileName);
 
-        // 0. 读取文件字节（复用，避免反复上传下载）
         byte[] fileBytes;
         try {
             fileBytes = file.getBytes();
@@ -72,7 +72,6 @@ public class DocumentServiceImpl implements DocumentService {
         }
         final byte[] docxBytes = fileBytes;
 
-        // 1. 上传文件到 MinIO（异步，不阻塞主流程）
         taskExecutor.execute(() -> {
             try {
                 minioUtil.upload(originalPath, new ByteArrayInputStream(docxBytes), docxBytes.length, file.getContentType());
@@ -82,7 +81,6 @@ public class DocumentServiceImpl implements DocumentService {
             }
         });
 
-        // 2. 插入 Paper 记录（同步）
         Paper paper = new Paper();
         paper.setId(paperId);
         paper.setOriginalFilePath(originalPath);
@@ -92,19 +90,11 @@ public class DocumentServiceImpl implements DocumentService {
         paperService.save(paper);
         log.info("[2/4] 数据库记录 Paper 完成");
 
-        // 3. 解析文档内容 + 图片异步上传 + 批量插入
-        // 优化：图片上传改为完全异步，不阻塞主线程，主流程只负责获取 URL 并入库
         long parseStartTime = System.currentTimeMillis();
         
-        // 复用全局线程池处理图片上传，避免创建过多线程
         final WordUtil.ImageUploader imgCallback = (pid, imageName, data, contentType) -> {
             String imagePath = "images/" + pid + "/" + imageName;
-            
-            // 1. 立即返回 URL (乐观策略，假设上传会成功)
-            // 如果 getPresignedUrl 较慢，可考虑改为直接拼接 URL：minioEndpoint + "/" + bucket + "/" + imagePath
             String url = minioUtil.getPresignedUrl(imagePath);
-            
-            // 2. 后台异步上传实体
             taskExecutor.execute(() -> {
                 try {
                     minioUtil.upload(imagePath, new ByteArrayInputStream(data), data.length, contentType);
@@ -112,7 +102,6 @@ public class DocumentServiceImpl implements DocumentService {
                     log.error("图片上传失败 {}: {}", imageName, e.getMessage());
                 }
             });
-            
             return url;
         };
 
@@ -126,7 +115,6 @@ public class DocumentServiceImpl implements DocumentService {
         log.info("[3/4] 解析文档内容完成 ({} 段落)，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - parseStartTime);
         log.info("[3/4-1] 图片已提交后台异步上传，不阻塞主流程");
 
-        // 4. 批量插入段落：配合 rewriteBatchedStatements=true 极速入库
         long dbBatchStartTime = System.currentTimeMillis();
         paragraphService.saveBatch(paragraphs, 1000);
         log.info("[DB] 批量插入 Paragraphs ({} 条) 完成，耗时: {}ms", paragraphs.size(), System.currentTimeMillis() - dbBatchStartTime);
@@ -141,6 +129,11 @@ public class DocumentServiceImpl implements DocumentService {
         result.setStatus(paper.getStatus());
         result.setParagraphCount(paper.getParagraphCount());
         return result;
+        } catch (Exception e) {
+            log.warn("[上传] 处理失败，回退次数: deviceId={}", deviceId);
+            dailyUsageService.rollback(deviceId);
+            throw e;
+        }
     }
 
     @Override
@@ -195,6 +188,7 @@ public class DocumentServiceImpl implements DocumentService {
             }
         }
 
+        try {
         Paragraph paragraph = paragraphService.getById(paragraphId);
         if (paragraph == null || !paragraph.getPaperId().equals(paperId)) {
             throw new IllegalArgumentException("段落不存在");
@@ -220,7 +214,6 @@ public class DocumentServiceImpl implements DocumentService {
 
         log.info("[润色] 段落ID: {}, 轮次: {}, 输出长度: {} 字", paragraphId, round, rewrittenText.length());
 
-        // 只有全文润色时才保存结果到数据库，选区润色仅返回结果由前端处理拼接
         if (selectedText == null || selectedText.isEmpty()) {
             paragraph.setRewrittenText(rewrittenText);
             paragraph.setStatus("rewritten");
@@ -232,11 +225,20 @@ public class DocumentServiceImpl implements DocumentService {
         result.setRewrittenText(rewrittenText);
         result.setRound(round);
         return result;
+        } catch (Exception e) {
+            if (round == 1) {
+                log.warn("[润色] 失败，回退次数: deviceId={}", deviceId);
+                dailyUsageService.rollback(deviceId);
+            }
+            throw e;
+        }
     }
 
     @Override
     public RewriteResultDTO rewriteTextOnly(String text, String deviceId, int round) {
+        log.info("[快速降重] 轮次: {}, deviceId={}, 调用前查询剩余次数", round, deviceId);
         int remaining = dailyUsageService.getRemaining(deviceId);
+        log.info("[快速降重] 轮次: {}, deviceId={}, 当前剩余: {}", round, deviceId, remaining);
         if (remaining <= 0) {
             throw new RuntimeException("今日免费次数已用完，请先兑换");
         }
@@ -248,6 +250,7 @@ public class DocumentServiceImpl implements DocumentService {
             }
         }
 
+        try {
         log.info("[快速降重] 轮次: {}, 输入长度: {} 字", round, text.length());
         String rewrittenText = callAiRewrite(text, round);
         log.info("[快速降重] 轮次: {}, 输出长度: {} 字", round, rewrittenText.length());
@@ -257,6 +260,13 @@ public class DocumentServiceImpl implements DocumentService {
         result.setRewrittenText(rewrittenText);
         result.setRound(round);
         return result;
+        } catch (Exception e) {
+            if (round == 1) {
+                log.warn("[快速降重] 失败，回退次数: deviceId={}", deviceId);
+                dailyUsageService.rollback(deviceId);
+            }
+            throw e;
+        }
     }
 
     @Override
@@ -765,16 +775,6 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     private PptGenerateResultDTO doGeneratePpt(String paperId, String deviceId, HttpServletRequest httpRequest) {
-        int remaining = dailyUsageService.getRemaining(deviceId);
-        if (remaining <= 0) {
-            throw new RuntimeException("今日免费次数已用完，请先兑换");
-        }
-
-        boolean consumed = dailyUsageService.consume(deviceId);
-        if (!consumed) {
-            throw new RuntimeException("今日免费次数已用完，请先兑换");
-        }
-
         Paper paper = paperService.getById(paperId);
         if (paper == null) {
             throw new IllegalArgumentException("论文不存在: " + paperId);

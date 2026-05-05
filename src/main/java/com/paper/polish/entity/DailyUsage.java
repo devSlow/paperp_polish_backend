@@ -17,8 +17,8 @@ public class DailyUsage {
     @TableField("usage_date")
     private LocalDate usageDate;
 
-    @TableField("count")
-    private Integer count;
+    @TableField("remain")
+    private Integer remain;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -29,6 +29,6 @@ public class DailyUsage {
     public LocalDate getUsageDate() { return usageDate; }
     public void setUsageDate(LocalDate usageDate) { this.usageDate = usageDate; }
 
-    public Integer getCount() { return count; }
-    public void setCount(Integer count) { this.count = count; }
+    public Integer getRemain() { return remain; }
+    public void setRemain(Integer remain) { this.remain = remain; }
 }

@@ -19,6 +19,7 @@ public class DocumentController {
 
     @PostMapping("/upload")
     public Result<UploadResultDTO> upload(@RequestParam("file") MultipartFile file,
+                                           @RequestParam(value = "deviceId", required = false) String deviceId,
                                            HttpServletRequest request) {
         if (file.isEmpty()) {
             return Result.fail(400, "文件不能为空");
@@ -27,11 +28,10 @@ public class DocumentController {
         if (filename == null || !filename.toLowerCase().endsWith(".docx")) {
             return Result.fail(400, "仅支持 .docx 格式文件");
         }
-        String sessionId = (String) request.getAttribute("sessionId");
-        if (sessionId == null || sessionId.isEmpty()) {
-            return Result.fail(400, "未授权");
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "deviceId不能为空");
         }
-        return Result.ok(documentService.upload(file, sessionId));
+        return Result.ok(documentService.upload(file, deviceId));
     }
 
     @GetMapping("/{paperId}")
@@ -47,40 +47,41 @@ public class DocumentController {
     @PostMapping("/{paperId}/paragraph/{paragraphId}/rewrite")
     public Result<RewriteResultDTO> rewriteParagraph(@PathVariable String paperId,
                                                        @PathVariable String paragraphId,
-                                                       @RequestBody RewriteRequest request,
-                                                       HttpServletRequest httpRequest) {
-        String sessionId = (String) httpRequest.getAttribute("sessionId");
-        if (sessionId == null || sessionId.isEmpty()) {
-            return Result.fail(400, "未授权");
+                                                       @RequestBody RewriteRequest request) {
+        String deviceId = request.getDeviceId();
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "deviceId不能为空");
         }
         int round = request.getRound() != null ? request.getRound() : 1;
-        return Result.ok(documentService.rewriteParagraph(paperId, paragraphId, request.getText(), sessionId, request.getSelectedText(), round));
+        return Result.ok(documentService.rewriteParagraph(paperId, paragraphId, request.getText(), deviceId, request.getSelectedText(), round));
     }
 
     @PostMapping("/rewrite/text")
-    public Result<RewriteResultDTO> rewriteTextOnly(@RequestBody RewriteRequest request,
-                                                     HttpServletRequest httpRequest) {
-        String sessionId = (String) httpRequest.getAttribute("sessionId");
-        if (sessionId == null || sessionId.isEmpty()) {
-            return Result.fail(400, "未授权");
+    public Result<RewriteResultDTO> rewriteTextOnly(@RequestBody RewriteRequest request) {
+        String deviceId = request.getDeviceId();
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "deviceId不能为空");
         }
         String text = request.getText();
         if (text == null || text.isEmpty()) {
             return Result.fail(400, "文本不能为空");
         }
         int round = request.getRound() != null ? request.getRound() : 1;
-        return Result.ok(documentService.rewriteTextOnly(text, sessionId, round));
+        return Result.ok(documentService.rewriteTextOnly(text, deviceId, round));
     }
 
     public static class RewriteRequest {
         private String text;
         private String selectedText;
+        private String deviceId;
         private Integer round;
 
         public String getText() { return text; }
         public void setText(String text) { this.text = text; }
         public String getSelectedText() { return selectedText; }
         public void setSelectedText(String selectedText) { this.selectedText = selectedText; }
+        public String getDeviceId() { return deviceId; }
+        public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
         public Integer getRound() { return round; }
         public void setRound(Integer round) { this.round = round; }
     }
@@ -141,15 +142,19 @@ public class DocumentController {
 
     @PostMapping("/{paperId}/generate-ppt")
     public Result<PptGenerateResultDTO> generatePpt(@PathVariable String paperId,
+                                                      @RequestBody PptGenerateRequest request,
                                                       HttpServletRequest httpRequest) {
-        String sessionId = (String) httpRequest.getAttribute("sessionId");
-        if (sessionId == null || sessionId.isEmpty()) {
-            return Result.fail(400, "未授权");
+        String deviceId = request.getDeviceId();
+        if (deviceId == null || deviceId.isEmpty()) {
+            return Result.fail(400, "deviceId不能为空");
         }
-        return Result.ok(documentService.generatePpt(paperId, sessionId, httpRequest));
+        return Result.ok(documentService.generatePpt(paperId, deviceId, httpRequest));
     }
 
     public static class PptGenerateRequest {
+        private String deviceId;
+        public String getDeviceId() { return deviceId; }
+        public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
     }
 
 }
