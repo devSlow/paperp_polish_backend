@@ -17,6 +17,9 @@ public class RedeemCode {
     @TableField("amount")
     private Integer amount;
 
+    @TableField("remain")
+    private Integer remain;
+
     @TableField("used")
     private Integer used;
 
@@ -37,6 +40,9 @@ public class RedeemCode {
 
     public Integer getAmount() { return amount; }
     public void setAmount(Integer amount) { this.amount = amount; }
+
+    public Integer getRemain() { return remain; }
+    public void setRemain(Integer remain) { this.remain = remain; }
 
     public Integer getUsed() { return used; }
     public void setUsed(Integer used) { this.used = used; }

@@ -35,28 +35,31 @@ public class RedeemServiceImpl extends ServiceImpl<RedeemCodeMapper, RedeemCode>
             return new RedeemResult(false, "兑换码不存在", 0);
         }
 
-        if (redeemCode.getUsed() == 1) {
-            return new RedeemResult(false, "兑换码已被使用", 0);
+        if (redeemCode.getRemain() <= 0) {
+            return new RedeemResult(false, "兑换码已被使用完", 0);
         }
 
-        redeemCode.setUsed(1);
+        int give = redeemCode.getAmount();
+        redeemCode.setRemain(redeemCode.getRemain() - 1);
+        redeemCode.setUsed(redeemCode.getUsed() + 1);
         redeemCode.setUsedDeviceId(deviceId);
         redeemCode.setUsedAt(LocalDateTime.now());
         this.updateById(redeemCode);
 
-        dailyUsageService.recharge(deviceId, redeemCode.getAmount());
+        dailyUsageService.recharge(deviceId, give);
 
-        return new RedeemResult(true, "兑换成功", redeemCode.getAmount());
+        return new RedeemResult(true, "兑换成功", give);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public List<RedeemCode> generateCodes(int count, int amount) {
+    public List<RedeemCode> generateCodes(int count, int amount, int remain) {
         List<RedeemCode> codes = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             RedeemCode rc = new RedeemCode();
             rc.setCode(generateCode());
             rc.setAmount(amount);
+            rc.setRemain(remain);
             rc.setUsed(0);
             codes.add(rc);
         }

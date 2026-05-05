@@ -23,8 +23,9 @@ public class AdminController {
     public Result<List<RedeemCode>> generate(@RequestBody Map<String, Integer> body) {
         Integer count = body.get("count");
         Integer amount = body.get("amount");
-        if (count == null || amount == null) {
-            return Result.fail(400, "参数不完整，需要 count 和 amount");
+        Integer remain = body.get("remain");
+        if (count == null || amount == null || remain == null) {
+            return Result.fail(400, "参数不完整，需要 count、amount 和 remain");
         }
         if (count < 1 || count > 1000) {
             return Result.fail(400, "count 范围：1-1000");
@@ -32,7 +33,10 @@ public class AdminController {
         if (amount < 1 || amount > 1000) {
             return Result.fail(400, "amount 范围：1-1000");
         }
-        List<RedeemCode> codes = redeemService.generateCodes(count, amount);
+        if (remain < 1 || remain > 10000) {
+            return Result.fail(400, "remain 范围：1-10000");
+        }
+        List<RedeemCode> codes = redeemService.generateCodes(count, amount, remain);
         return Result.ok(codes);
     }
 

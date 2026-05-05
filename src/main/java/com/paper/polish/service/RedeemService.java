@@ -8,6 +8,6 @@ import java.util.List;
 public interface RedeemService extends IService<RedeemCode> {
     RedeemResult redeem(String code, String deviceId);
 
-    List<RedeemCode> generateCodes(int count, int amount);
+    List<RedeemCode> generateCodes(int count, int amount, int remain);
 }
 

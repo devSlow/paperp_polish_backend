@@ -37,7 +37,8 @@ public class UsageController {
         if (!res.isSuccess()) {
             return Result.fail(400, res.getMessage());
         }
+        String token = "redeem_" + deviceId + "_" + System.currentTimeMillis();
         int remain = dailyUsageService.getRemaining(deviceId);
-        return Result.ok(Map.of("success", true, "message", res.getMessage(), "added", res.getAmount(), "remain", remain));
+        return Result.ok(Map.of("success", true, "message", res.getMessage(), "added", res.getAmount(), "remain", remain, "token", token));
     }
 }

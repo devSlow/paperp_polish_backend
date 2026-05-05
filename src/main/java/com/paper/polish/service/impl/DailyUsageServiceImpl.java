@@ -16,7 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class DailyUsageServiceImpl extends ServiceImpl<DailyUsageMapper, DailyUsage> implements DailyUsageService {
 
-    private static final int DAILY_LIMIT = 10;
+    private static final int DAILY_LIMIT = 5;
 
     private DailyUsage getOrCreate(String deviceId) {
         LocalDate today = LocalDate.now();
