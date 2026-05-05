@@ -81,8 +81,26 @@ public class SvgPptxConverter {
 
         String cleaned = svgContent.replaceAll("<\\?xml[^?]*\\?>", "").trim();
         cleaned = sanitizeXmlTextContent(cleaned);
+        
+        // 最终验证：确保 SVG 完整
+        if (!cleaned.contains("</svg>")) {
+            throw new IllegalArgumentException("SVG 不完整：缺少 </svg> 闭合标签");
+        }
+        
         try (InputStream is = new ByteArrayInputStream(cleaned.getBytes(StandardCharsets.UTF_8))) {
             doc = builder.parse(is);
+        } catch (Exception e) {
+            // 尝试更宽松的修复
+            String repaired = attemptSvgRepair(cleaned);
+            if (repaired != null) {
+                try (InputStream is2 = new ByteArrayInputStream(repaired.getBytes(StandardCharsets.UTF_8))) {
+                    doc = builder.parse(is2);
+                } catch (Exception e2) {
+                    throw new Exception("SVG 解析失败: " + e.getMessage(), e);
+                }
+            } else {
+                throw new Exception("SVG 解析失败: " + e.getMessage(), e);
+            }
         }
 
         NodeList children = doc.getDocumentElement().getChildNodes();
@@ -688,6 +706,60 @@ public class SvgPptxConverter {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 尝试修复损坏的 SVG
+     * 处理常见的 XML 解析错误，如未闭合标签、属性值未加引号等
+     */
+    private static String attemptSvgRepair(String svg) {
+        if (svg == null || svg.isEmpty()) return null;
+        
+        try {
+            // 1. 确保 svg 标签闭合
+            if (!svg.contains("</svg>")) {
+                svg = svg + "</svg>";
+            }
+            
+            // 2. 修复未加引号的属性值 (例如: fill=#fff -> fill="#fff")
+            svg = svg.replaceAll("([a-zA-Z-]+)=([^\"'][^\\s>]*)", "$1=\"$2\"");
+            
+            // 3. 修复常见问题：自闭合标签没有正确关闭
+            svg = svg.replaceAll("<([a-zA-Z][a-zA-Z0-9]*)\\s+([^>]*)/\\s*>", "<$1 $2 />");
+            
+            // 4. 统计并补全未闭合的标签
+            java.util.Stack<String> tagStack = new java.util.Stack<>();
+            java.util.regex.Pattern tagPattern = java.util.regex.Pattern.compile("<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*(/?)>");
+            java.util.regex.Matcher matcher = tagPattern.matcher(svg);
+            
+            while (matcher.find()) {
+                boolean isClosing = !matcher.group(1).isEmpty();
+                boolean isSelfClosing = !matcher.group(3).isEmpty();
+                String tagName = matcher.group(2).toLowerCase();
+                
+                if (isSelfClosing) continue;
+                if (tagName.equals("svg") && isClosing) continue; // 根标签在最后处理
+                
+                if (isClosing) {
+                    if (!tagStack.isEmpty() && tagStack.peek().equals(tagName)) {
+                        tagStack.pop();
+                    }
+                } else {
+                    tagStack.push(tagName);
+                }
+            }
+            
+            // 补全未闭合的标签
+            StringBuilder repaired = new StringBuilder(svg);
+            while (!tagStack.isEmpty()) {
+                String tag = tagStack.pop();
+                repaired.append("</").append(tag).append(">");
+            }
+            
+            return repaired.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static class TransformState {

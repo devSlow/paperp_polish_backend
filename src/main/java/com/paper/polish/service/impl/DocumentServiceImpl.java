@@ -473,6 +473,10 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     private String callAi(String systemPrompt, String userContent, double temperature, int retryCount) {
+        return callAi(systemPrompt, userContent, temperature, retryCount, null);
+    }
+
+    private String callAi(String systemPrompt, String userContent, double temperature, int retryCount, Integer maxTokens) {
         if (aiConfig.getBaseUrl() == null || aiConfig.getBaseUrl().isEmpty()
                 || aiConfig.getApiKey() == null || aiConfig.getApiKey().isEmpty()) {
             throw new RuntimeException("AI 接口未配置，请在 application.yml 中配置 ai.openai 相关参数");
@@ -489,6 +493,10 @@ public class DocumentServiceImpl implements DocumentService {
             bodyMap.put("model", aiConfig.getModel());
             bodyMap.put("temperature", temperature);
             bodyMap.put("stream", false);
+            if (maxTokens != null && maxTokens > 0) {
+                bodyMap.put("max_tokens", maxTokens);
+                log.info("max_tokens: {}", maxTokens);
+            }
             bodyMap.put("messages", java.util.List.of(
                     java.util.Map.of("role", "system", "content", systemPrompt),
                     java.util.Map.of("role", "user", "content", userContent)
@@ -537,14 +545,14 @@ public class DocumentServiceImpl implements DocumentService {
 
             // 如果非流式解析失败，说明 API 强制返回了流式，改用流式读取
             log.info("非流式解析失败，改用流式读取");
-            return callAiStream(systemPrompt, userContent, temperature, retryCount);
+            return callAiStream(systemPrompt, userContent, temperature, retryCount, maxTokens);
         } catch (RuntimeException e) {
             log.error("=== AI 调用异常 (RuntimeException) ===: {}", e.getMessage());
             // 如果内容为空且未超过重试次数，提高 temperature 重试
             if (retryCount < 2 && e.getMessage().contains("内容为空")) {
                 double newTemp = Math.min(temperature + 0.2 * (retryCount + 1), 1.0);
                 log.info("内容为空，提高 temperature 至 {} 重试 (第{}次)", newTemp, retryCount + 1);
-                return callAi(systemPrompt, userContent, newTemp, retryCount + 1);
+                return callAi(systemPrompt, userContent, newTemp, retryCount + 1, maxTokens);
             }
             throw e;
         } catch (Exception e) {
@@ -554,6 +562,10 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     private String callAiStream(String systemPrompt, String userContent, double temperature, int retryCount) {
+        return callAiStream(systemPrompt, userContent, temperature, retryCount, null);
+    }
+
+    private String callAiStream(String systemPrompt, String userContent, double temperature, int retryCount, Integer maxTokens) {
         log.info("=== AI 流式调用开始 ===");
         log.info("模型: {}", aiConfig.getModel());
         log.info("输入文本长度: {} 字", userContent.length());
@@ -564,6 +576,10 @@ public class DocumentServiceImpl implements DocumentService {
             bodyMap.put("model", aiConfig.getModel());
             bodyMap.put("temperature", temperature);
             bodyMap.put("stream", true);
+            if (maxTokens != null && maxTokens > 0) {
+                bodyMap.put("max_tokens", maxTokens);
+                log.info("max_tokens: {}", maxTokens);
+            }
             bodyMap.put("messages", java.util.List.of(
                     java.util.Map.of("role", "system", "content", systemPrompt),
                     java.util.Map.of("role", "user", "content", userContent)
@@ -629,7 +645,7 @@ public class DocumentServiceImpl implements DocumentService {
                 if (retryCount < 2) {
                     double newTemp = Math.min(temperature + 0.2 * (retryCount + 1), 1.0);
                     log.info("内容为空，提高 temperature 至 {} 重试 (第{}次)", newTemp, retryCount + 1);
-                    return callAi(systemPrompt, userContent, newTemp, retryCount + 1);
+                    return callAi(systemPrompt, userContent, newTemp, retryCount + 1, maxTokens);
                 }
                 throw new RuntimeException("AI 流式响应内容为空");
             }
@@ -645,7 +661,7 @@ public class DocumentServiceImpl implements DocumentService {
             if (retryCount < 2 && e.getMessage().contains("内容为空")) {
                 double newTemp = Math.min(temperature + 0.2 * (retryCount + 1), 1.0);
                 log.info("内容为空，提高 temperature 至 {} 重试 (第{}次)", newTemp, retryCount + 1);
-                return callAi(systemPrompt, userContent, newTemp, retryCount + 1);
+                return callAi(systemPrompt, userContent, newTemp, retryCount + 1, maxTokens);
             }
             throw e;
         } catch (Exception e) {
@@ -1039,7 +1055,8 @@ public class DocumentServiceImpl implements DocumentService {
                 .replace("{STYLE_REF}", styleRef.isEmpty() ? "（无，请根据论文内容自由设计）" : "参考上一页风格：\n" + styleRef.substring(0, Math.min(800, styleRef.length())) + "...");
 
         String userContent = "论文标题：" + title + "\n\n论文结构化大纲：\n" + outline;
-        return callAi(prompt, userContent, 0.4);
+        // PPT SVG 生成需要更高的 token 限制，避免截断
+        return callAi(prompt, userContent, 0.4, 0, 16000);
     }
 
     private List<String> parseSvgSlides(String svgOutput) {
@@ -1055,7 +1072,13 @@ public class DocumentServiceImpl implements DocumentService {
                 int svgStart = block.indexOf("<svg");
                 if (svgStart == -1) continue;
                 int svgEnd = block.indexOf("</svg>", svgStart);
-                if (svgEnd == -1) continue;
+                if (svgEnd == -1) {
+                    // SVG 未闭合，尝试修复
+                    String incomplete = block.substring(svgStart);
+                    String fixed = fixIncompleteSvg(incomplete);
+                    if (fixed != null) slides.add(fixed);
+                    continue;
+                }
                 slides.add(block.substring(svgStart, svgEnd + 6).trim());
                 continue;
             }
@@ -1066,6 +1089,11 @@ public class DocumentServiceImpl implements DocumentService {
             int svgEnd = content.indexOf("</svg>");
             if (svgStart != -1 && svgEnd != -1) {
                 slides.add(content.substring(svgStart, svgEnd + 6).trim());
+            } else if (svgStart != -1) {
+                // SVG 未闭合，尝试修复
+                String incomplete = content.substring(svgStart);
+                String fixed = fixIncompleteSvg(incomplete);
+                if (fixed != null) slides.add(fixed);
             }
         }
 
@@ -1079,12 +1107,21 @@ public class DocumentServiceImpl implements DocumentService {
                     int svgEnd = block.indexOf("</svg>", svgStart);
                     if (svgStart != -1 && svgEnd != -1) {
                         slides.add(block.substring(svgStart, svgEnd + 6).trim());
+                    } else if (svgStart != -1) {
+                        String incomplete = block.substring(svgStart);
+                        String fixed = fixIncompleteSvg(incomplete);
+                        if (fixed != null) slides.add(fixed);
                     }
                 } else {
                     int svgStart = block.indexOf("<svg");
                     while (svgStart != -1) {
                         int svgEnd = block.indexOf("</svg>", svgStart);
-                        if (svgEnd == -1) break;
+                        if (svgEnd == -1) {
+                            String incomplete = block.substring(svgStart);
+                            String fixed = fixIncompleteSvg(incomplete);
+                            if (fixed != null) slides.add(fixed);
+                            break;
+                        }
                         slides.add(block.substring(svgStart, svgEnd + 6).trim());
                         svgStart = block.indexOf("<svg", svgEnd + 6);
                     }
@@ -1096,7 +1133,12 @@ public class DocumentServiceImpl implements DocumentService {
             int svgStart = svgOutput.indexOf("<svg");
             while (svgStart != -1) {
                 int svgEnd = svgOutput.indexOf("</svg>", svgStart);
-                if (svgEnd == -1) break;
+                if (svgEnd == -1) {
+                    String incomplete = svgOutput.substring(svgStart);
+                    String fixed = fixIncompleteSvg(incomplete);
+                    if (fixed != null) slides.add(fixed);
+                    break;
+                }
                 slides.add(svgOutput.substring(svgStart, svgEnd + 6).trim());
                 svgStart = svgOutput.indexOf("<svg", svgEnd + 6);
             }
@@ -1104,6 +1146,63 @@ public class DocumentServiceImpl implements DocumentService {
 
         log.info("[PPT生成-SVG] 解析到 {} 个 SVG 幻灯片", slides.size());
         return slides;
+    }
+
+    /**
+     * 修复不完整的 SVG 代码
+     * AI 响应可能被截断，导致 </svg> 缺失
+     */
+    private String fixIncompleteSvg(String svg) {
+        if (svg == null || svg.isEmpty()) return null;
+        
+        // 确保以 <svg 开头
+        if (!svg.trim().startsWith("<svg")) return null;
+        
+        // 如果已经完整，直接返回
+        if (svg.contains("</svg>")) return svg.trim();
+        
+        log.warn("[PPT生成-SVG] 检测到不完整的 SVG，尝试修复...");
+        
+        // 统计未闭合的标签
+        java.util.Stack<String> tagStack = new java.util.Stack<>();
+        java.util.regex.Pattern tagPattern = java.util.regex.Pattern.compile("<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*(/?)>");
+        java.util.regex.Matcher matcher = tagPattern.matcher(svg);
+        
+        while (matcher.find()) {
+            boolean isClosing = !matcher.group(1).isEmpty();
+            boolean isSelfClosing = !matcher.group(3).isEmpty();
+            String tagName = matcher.group(2).toLowerCase();
+            
+            // 跳过自闭合标签和特殊标签
+            if (isSelfClosing || tagName.equals("defs") || tagName.equals("title") || tagName.equals("desc")) {
+                continue;
+            }
+            
+            if (isClosing) {
+                if (!tagStack.isEmpty() && tagStack.peek().equals(tagName)) {
+                    tagStack.pop();
+                }
+            } else {
+                tagStack.push(tagName);
+            }
+        }
+        
+        // 补全未闭合的标签
+        StringBuilder fixed = new StringBuilder(svg);
+        while (!tagStack.isEmpty()) {
+            String tag = tagStack.pop();
+            fixed.append("</").append(tag).append(">");
+            log.debug("[PPT生成-SVG] 补全标签: </{}>", tag);
+        }
+        
+        // 确保有 </svg>
+        if (!fixed.toString().contains("</svg>")) {
+            fixed.append("</svg>");
+            log.debug("[PPT生成-SVG] 补全 </svg>");
+        }
+        
+        log.info("[PPT生成-SVG] SVG 修复完成");
+        return fixed.toString().trim();
     }
 
 }
