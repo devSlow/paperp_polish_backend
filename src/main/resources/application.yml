@@ -56,6 +56,11 @@ minio:
   secret-key: admin123456
   bucket: paper-polish
 
+# 本地缓存配置
+local:
+  cache-dir: ./cache/files
+  sync-cron: "0 */5 * * * ?"
+
 ai:
   openai:
     base-url: https://api.killerbest.com/v1

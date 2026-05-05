@@ -74,10 +74,10 @@ public class DocumentServiceImpl implements DocumentService {
 
         taskExecutor.execute(() -> {
             try {
-                minioUtil.upload(originalPath, new ByteArrayInputStream(docxBytes), docxBytes.length, file.getContentType());
-                log.info("[1/4] 文件上传 MinIO 完成");
+                minioUtil.uploadToLocal(originalPath, new ByteArrayInputStream(docxBytes), file.getContentType());
+                log.info("[1/4] 文件已缓存到本地");
             } catch (Exception e) {
-                log.error("文件上传 MinIO 失败: {}", e.getMessage());
+                log.error("文件缓存失败: {}", e.getMessage());
             }
         });
 
@@ -95,13 +95,7 @@ public class DocumentServiceImpl implements DocumentService {
         final WordUtil.ImageUploader imgCallback = (pid, imageName, data, contentType) -> {
             String imagePath = "images/" + pid + "/" + imageName;
             String url = minioUtil.getPresignedUrl(imagePath);
-            taskExecutor.execute(() -> {
-                try {
-                    minioUtil.upload(imagePath, new ByteArrayInputStream(data), data.length, contentType);
-                } catch (Exception e) {
-                    log.error("图片上传失败 {}: {}", imageName, e.getMessage());
-                }
-            });
+            minioUtil.uploadToLocal(imagePath, new ByteArrayInputStream(data), contentType);
             return url;
         };
 

@@ -2,9 +2,12 @@ package com.paper.polish.config;
 
 import io.minio.MinioClient;
 import lombok.Data;
+import okhttp3.OkHttpClient;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.concurrent.TimeUnit;
 
 @Data
 @Configuration
@@ -18,9 +21,16 @@ public class MinioConfig {
 
     @Bean
     public MinioClient minioClient() {
+        OkHttpClient okHttpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build();
+        
         return MinioClient.builder()
                 .endpoint(endpoint)
                 .credentials(accessKey, secretKey)
+                .httpClient(okHttpClient)
                 .build();
     }
 }
