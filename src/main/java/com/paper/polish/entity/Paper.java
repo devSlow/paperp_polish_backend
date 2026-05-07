@@ -12,7 +12,7 @@ public class Paper {
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
 
-    private String userId;
+    private String userId = null;
 
     private String originalFilePath;
 

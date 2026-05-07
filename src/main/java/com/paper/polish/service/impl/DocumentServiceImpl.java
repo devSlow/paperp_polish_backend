@@ -91,7 +91,7 @@ public class DocumentServiceImpl implements DocumentService {
         log.info("[2/4] 数据库记录 Paper 完成");
 
         long parseStartTime = System.currentTimeMillis();
-        
+
         final WordUtil.ImageUploader imgCallback = (pid, imageName, data, contentType) -> {
             String imagePath = "images/" + pid + "/" + imageName;
             String url = minioUtil.getPresignedUrl(imagePath);
@@ -200,8 +200,8 @@ public class DocumentServiceImpl implements DocumentService {
             sourceText = paragraph.getOriginalText();
         }
 
-        log.info("[润色] 段落ID: {}, 轮次: {}, 输入长度: {} 字, 来源: {}", 
-                paragraphId, round, sourceText.length(), 
+        log.info("[润色] 段落ID: {}, 轮次: {}, 输入长度: {} 字, 来源: {}",
+                paragraphId, round, sourceText.length(),
                 selectedText != null ? "选区" : (text != null ? "参数" : "原文"));
 
         String rewrittenText = callAiRewrite(sourceText, round);
@@ -679,13 +679,13 @@ public class DocumentServiceImpl implements DocumentService {
             // 标准非流式响应
             if (trimmed.startsWith("{")) {
                 com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(trimmed);
-                
+
                 // 检查是否为错误响应
                 if (root.has("error")) {
                     String errMsg = root.path("error").path("message").asText("未知错误");
                     throw new RuntimeException("AI 接口返回错误: " + errMsg);
                 }
-                
+
                 String content = root.path("choices").path(0).path("message").path("content").asText(null);
                 if (content != null && !content.isEmpty()) {
                     return cleanAiContent(content);
@@ -883,7 +883,13 @@ public class DocumentServiceImpl implements DocumentService {
             + "4. 内容页：浅色背景 + 标题栏 + 内容卡片 + 图标装饰\n"
             + "5. 要点页：每条要点前加彩色圆点或小图标\n"
             + "6. 数据页：用简单柱状图或饼图展示数据（<rect> 或 <path> 绘制）\n"
-            + "7. 结尾页：与封面风格一致的深色背景 + \"谢谢观看\"\n\n"
+            + "7. 结尾页：与封面风格一致的深色背景 + \"谢谢观看\"\n"
+            + "8. 字号规范：封面标题36，副标题20，内容页标题28，正文24，行间距为字号的2倍\n"
+            + "9. 标题文字单行显示，避免换行导致重叠\n"
+            + "10. 文字定位：圆形内文字居中（text-anchor=\"middle\"），卡片内文字居中对齐\n"
+            + "11. 图表标题在图表上方30px处，不遮挡图表内容\n"
+            + "12. 【重要】文字元素必须放在背景rect之后，确保文字显示在最上层\n"
+            + "13. 圆形内文字不要超过圆形范围，文字长度控制在直径以内\n\n"
             + "=== 幻灯片结构（20-25 页）===\n"
             + "第1页：封面（论文标题、作者、日期）\n"
             + "第2页：目录\n"
@@ -916,14 +922,25 @@ public class DocumentServiceImpl implements DocumentService {
             + "每个幻灯片必须是一个完整的 <svg> 元素，包含 viewBox=\"0 0 1280 720\"\n"
             + "每个幻灯片前后用 <!-- SLIDE_START --> 和 <!-- SLIDE_END --> 包裹\n\n"
             + "=== 字号与间距规范（严格执行） ===\n"
-            + "1. 主标题: font-size=\"48\"\n"
-            + "2. 副标题/卡片标题: font-size=\"36\"\n"
-            + "3. 正文要点: font-size=\"28\"\n"
-            + "4. 辅助说明/引用: font-size=\"22\"\n"
-            + "5. 行间距：同一文本块内，相邻两行 <text> 的 y 坐标差值必须 >= 字体大小 * 1.5\n"
-            + "6. 卡片间距：卡片之间垂直间距至少 40px，水平间距至少 40px\n"
-            + "7. 绝对禁止使用小于 20 的字号！确保 PPT 在大屏幕上清晰可读\n"
-            + "8. 避免重叠：任何两个元素的边界框（bounding box）不得相互重叠\n\n"
+            + "1. 主标题: font-size=\"36\"（标题不超过15个字，避免换行）\n"
+            + "2. 副标题/卡片标题: font-size=\"28\"\n"
+            + "3. 正文要点: font-size=\"24\"\n"
+            + "4. 辅助说明/引用: font-size=\"20\"\n"
+            + "5. 行间距：同一文本块内，相邻两行 <text> 的 y 坐标差值必须 >= 字体大小 * 2\n"
+            + "6. 卡片间距：卡片之间垂直间距至少 50px，水平间距至少 40px\n"
+            + "7. 绝对禁止使用小于 18 的字号！确保 PPT 在大屏幕上清晰可读\n"
+            + "8. 避免重叠：任何两个元素的边界框（bounding box）不得相互重叠\n"
+            + "9. 标题文字尽量单行显示！如果标题太长，缩短内容或缩小字号\n"
+            + "10. 封面副标题（作者、日期等）使用小字号（18-20），确保不遮挡内容\n"
+            + "=== 文字定位规范（严格执行） ===\n"
+            + "1. 圆形/椭圆内文字：y坐标=圆心y坐标，text-anchor=\"middle\"，文字垂直居中\n"
+            + "2. 矩形/卡片内文字：y坐标=矩形顶部y+矩形高度的一半+字号的一半，text-anchor=\"middle\"\n"
+            + "3. 图表标题：放在图表上方，y坐标比图表顶部小30-40px，不遮挡图表\n"
+            + "4. 文字必须完全在背景色块内部，不得溢出\n"
+            + "5. 多行文字使用多个<text>元素，每行y坐标递增（递增量=字号*1.5）\n"
+            + "6. 【重要】文字元素必须放在背景rect之后！确保文字显示在最上层不被遮挡\n"
+            + "7. 圆形/椭圆内的文字长度不要超过直径，否则会溢出圆形范围\n"
+            + "8. SVG元素顺序：先画背景，再画装饰，最后画文字（文字在最上层）\n"
             + "=== 允许的 SVG 元素 ===\n"
             + "- <rect>, <ellipse>, <circle>, <line>, <polygon>, <path> (仅 M,L,Z,H,V)\n"
             + "- <text>, <tspan>, <g>, <defs>, transform\n\n"
@@ -935,7 +952,9 @@ public class DocumentServiceImpl implements DocumentService {
             + "2. 保持页面整洁，留白充足，重点突出\n"
             + "3. 内容页：浅色背景 + 标题栏 + 内容卡片 + 图标装饰\n"
             + "4. 结尾页 (第22页)：深色背景 + \"谢谢观看\"\n"
-            + "5. 简化 SVG 路径，避免使用过于复杂的装饰性图形，以保持代码精简\n\n"
+            + "5. 简化 SVG 路径，避免使用过于复杂的装饰性图形，以保持代码精简\n"
+            + "6. 图表布局：图表标题在图表上方，间距30px；图表内容居中放置\n"
+            + "7. 文字居中：使用text-anchor=\"middle\"，x坐标=背景块中心x\n\n"
             + "=== 风格参考 ===\n"
             + "{STYLE_REF}\n\n"
             + "=== 输出格式 ===\n"
@@ -976,7 +995,7 @@ public class DocumentServiceImpl implements DocumentService {
         } catch (Exception e) {
             log.error("封面生成失败: {}", e.getMessage());
         }
-        
+
         List<String> slides = parseSvgSlides(coverSvg);
         String styleRef = "";
         if (!slides.isEmpty()) {
@@ -989,18 +1008,18 @@ public class DocumentServiceImpl implements DocumentService {
 
         // 2. 并行生成剩余页面
         Map<Integer, List<String>> batchMap = new ConcurrentHashMap<>();
-        int targetSlides = 22;
+        int targetSlides = 22; // 测试模式：只生成1页
         int batchSize = 6; // 增大批次，减少请求次数
         int currentSlide = 2;
-        
+
         List<CompletableFuture<Void>> futures = new ArrayList<>();
-        
+
         while (currentSlide <= targetSlides) {
             int endSlide = Math.min(currentSlide + batchSize - 1, targetSlides);
             final int start = currentSlide;
             final int end = endSlide;
             final String ref = styleRef;
-            
+
             // 使用线程池并行执行
             futures.add(CompletableFuture.runAsync(() -> {
                 log.info("[PPT生成-SVG] 开始并行生成第 {}-{} 页", start, end);
@@ -1024,26 +1043,26 @@ public class DocumentServiceImpl implements DocumentService {
                     }
                 }
             }, taskExecutor));
-            
+
             currentSlide = endSlide + 1;
         }
-        
+
         // 等待所有并行任务完成
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.MINUTES);
         } catch (Exception e) {
             log.error("[PPT生成-SVG] 等待并行任务超时或异常: {}", e.getMessage());
         }
-        
+
         // 按顺序合并结果
         List<String> finalSlides = new ArrayList<>(slides); // 包含封面
         List<Integer> keys = new ArrayList<>(batchMap.keySet());
         Collections.sort(keys);
-        
+
         for (Integer key : keys) {
             finalSlides.addAll(batchMap.get(key));
         }
-        
+
         log.info("[PPT生成-SVG] 全部页面生成完成，共 {} 页", finalSlides.size());
         return finalSlides;
     }
@@ -1061,20 +1080,27 @@ public class DocumentServiceImpl implements DocumentService {
 
     private List<String> parseSvgSlides(String svgOutput) {
         List<String> slides = new java.util.ArrayList<>();
+        log.info("[PPT生成-SVG] parseSvgSlides 原始内容长度: {}, 前500字: {}", svgOutput.length(), svgOutput.substring(0, Math.min(500, svgOutput.length())));
 
-        svgOutput = svgOutput.replaceAll("```xml\\s*", "").replaceAll("```\\s*", "").trim();
+        svgOutput = svgOutput.replaceAll("```xml\\s*", "").replaceAll("```svg\\s*", "").replaceAll("```\\s*", "").trim();
 
         String[] blocks = svgOutput.split("(?=<!--\\s*SLIDE_START\\s*-->)");
-        for (String block : blocks) {
-            int start = block.indexOf("<!--");
-            int end = block.indexOf("<!--", start + 1);
+        log.info("[PPT生成-SVG] split后 blocks 数量: {}", blocks.length);
+        for (int i = 0; i < blocks.length; i++) {
+            String block = blocks[i];
+            log.info("[PPT生成-SVG] block[{}] 长度: {}, 内容前200字: {}", i, block.length(), block.substring(0, Math.min(200, block.length())));
+            int start = block.indexOf("<!-- SLIDE_START -->");
+            int end = block.indexOf("<!-- SLIDE_END -->", start + 1);
+            log.info("[PPT生成-SVG] block[{}] start={}, end={}", i, start, end);
             if (start == -1) {
                 int svgStart = block.indexOf("<svg");
                 if (svgStart == -1) continue;
                 int svgEnd = block.indexOf("</svg>", svgStart);
+                log.info("[PPT生成-SVG] block[{}] svgStart={}, svgEnd={}", i, svgStart, svgEnd);
                 if (svgEnd == -1) {
                     // SVG 未闭合，尝试修复
                     String incomplete = block.substring(svgStart);
+                    log.info("[PPT生成-SVG] block[{}] 调用fixIncompleteSvg前 incomplete长度: {}", i, incomplete.length());
                     String fixed = fixIncompleteSvg(incomplete);
                     if (fixed != null) slides.add(fixed);
                     continue;
@@ -1101,8 +1127,9 @@ public class DocumentServiceImpl implements DocumentService {
             String[] candidates = svgOutput.split("(?=<!-)");
             for (String block : candidates) {
                 if (!block.contains("<svg")) continue;
-                int htmlStart = block.indexOf("<!--");
-                if (htmlStart != -1 && block.contains("-->")) {
+                int htmlStart = block.indexOf("<!-- SLIDE_START -->");
+                int htmlEnd = block.indexOf("<!-- SLIDE_END -->");
+                if (htmlStart != -1 && htmlEnd != -1) {
                     int svgStart = block.indexOf("<svg");
                     int svgEnd = block.indexOf("</svg>", svgStart);
                     if (svgStart != -1 && svgEnd != -1) {
@@ -1154,30 +1181,32 @@ public class DocumentServiceImpl implements DocumentService {
      */
     private String fixIncompleteSvg(String svg) {
         if (svg == null || svg.isEmpty()) return null;
-        
+
+        log.info("[PPT生成-SVG] fixIncompleteSvg 收到内容长度: {}, 内容前300字: {}", svg.length(), svg.substring(0, Math.min(300, svg.length())));
+
         // 确保以 <svg 开头
         if (!svg.trim().startsWith("<svg")) return null;
-        
+
         // 如果已经完整，直接返回
         if (svg.contains("</svg>")) return svg.trim();
-        
+
         log.warn("[PPT生成-SVG] 检测到不完整的 SVG，尝试修复...");
-        
+
         // 统计未闭合的标签
         java.util.Stack<String> tagStack = new java.util.Stack<>();
         java.util.regex.Pattern tagPattern = java.util.regex.Pattern.compile("<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*(/?)>");
         java.util.regex.Matcher matcher = tagPattern.matcher(svg);
-        
+
         while (matcher.find()) {
             boolean isClosing = !matcher.group(1).isEmpty();
             boolean isSelfClosing = !matcher.group(3).isEmpty();
             String tagName = matcher.group(2).toLowerCase();
-            
+
             // 跳过自闭合标签和特殊标签
             if (isSelfClosing || tagName.equals("defs") || tagName.equals("title") || tagName.equals("desc")) {
                 continue;
             }
-            
+
             if (isClosing) {
                 if (!tagStack.isEmpty() && tagStack.peek().equals(tagName)) {
                     tagStack.pop();
@@ -1186,7 +1215,7 @@ public class DocumentServiceImpl implements DocumentService {
                 tagStack.push(tagName);
             }
         }
-        
+
         // 补全未闭合的标签
         StringBuilder fixed = new StringBuilder(svg);
         while (!tagStack.isEmpty()) {
@@ -1194,14 +1223,14 @@ public class DocumentServiceImpl implements DocumentService {
             fixed.append("</").append(tag).append(">");
             log.debug("[PPT生成-SVG] 补全标签: </{}>", tag);
         }
-        
+
         // 确保有 </svg>
         if (!fixed.toString().contains("</svg>")) {
             fixed.append("</svg>");
             log.debug("[PPT生成-SVG] 补全 </svg>");
         }
-        
-        log.info("[PPT生成-SVG] SVG 修复完成");
+
+        log.info("[PPT生成-SVG] SVG 修复完成, 修复后长度: {}", fixed.toString().trim().length());
         return fixed.toString().trim();
     }
 

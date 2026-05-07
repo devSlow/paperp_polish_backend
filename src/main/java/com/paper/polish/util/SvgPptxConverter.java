@@ -1,5 +1,6 @@
 package com.paper.polish.util;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.sl.usermodel.ShapeType;
 import org.apache.poi.sl.usermodel.StrokeStyle;
 import org.apache.poi.sl.usermodel.TextParagraph;
@@ -46,6 +47,7 @@ import java.util.List;
  * - HEX colors only, transparency via fill-opacity/stroke-opacity
  * - viewBox must match canvas dimensions
  */
+@Slf4j
 public class SvgPptxConverter {
 
     private static final double SVG_WIDTH = 1280.0;
@@ -56,10 +58,13 @@ public class SvgPptxConverter {
     private static final double LINE_HEIGHT_FACTOR = 1.5;
 
     public static byte[] convertToPptx(List<String> svgSlides, String title) throws Exception {
+        log.info("===== 开始转换 SVG -> PPTX，总页数: {} =====", svgSlides.size());
         XMLSlideShow ppt = new XMLSlideShow();
         ppt.setPageSize(new java.awt.Dimension((int) SVG_WIDTH, (int) SVG_HEIGHT));
 
-        for (String svg : svgSlides) {
+        for (int i = 0; i < svgSlides.size(); i++) {
+            String svg = svgSlides.get(i);
+            log.info("==== 处理第 {} 页 SVG，长度: {} ====", i + 1, svg.length());
             XSLFSlide slide = ppt.createSlide();
             convertSvgToSlide(svg, slide);
         }
@@ -71,6 +76,8 @@ public class SvgPptxConverter {
     }
 
     private static void convertSvgToSlide(String svgContent, XSLFSlide slide) throws Exception {
+        log.info("SVG原始内容前200字: {}", svgContent.substring(0, Math.min(200, svgContent.length())));
+        
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         factory.setNamespaceAware(true);
         factory.setValidating(false);
@@ -79,8 +86,26 @@ public class SvgPptxConverter {
         DocumentBuilder builder = factory.newDocumentBuilder();
         org.w3c.dom.Document doc;
 
+        // 清理 XML 声明和 DOCTYPE
         String cleaned = svgContent.replaceAll("<\\?xml[^?]*\\?>", "").trim();
-        cleaned = sanitizeXmlTextContent(cleaned);
+        cleaned = cleaned.replaceAll("<!DOCTYPE[^>]*>", "");
+        cleaned = cleaned.replaceAll("<!\\[CDATA\\[[\\s\\S]*?]]>", ""); // 清理 CDATA
+        cleaned = cleaned.replaceAll("<!\\[endif\\]-->", ""); // 清理条件注释
+        
+        // 移除所有 <! 开头的非法标签
+        cleaned = cleaned.replaceAll("<![^>]+>", "");
+        
+        // 移除 sanitizeXmlTextContent，因为它会转义 < 字符导致 SVG 解析失败
+        // cleaned = sanitizeXmlTextContent(cleaned);
+        
+        // 确保以 <svg 开头
+        int svgStart = cleaned.indexOf("<svg");
+        if (svgStart > 0) {
+            cleaned = cleaned.substring(svgStart);
+        }
+        cleaned = cleaned.trim();
+        
+        log.info("SVG清理后内容前200字: {}", cleaned.substring(0, Math.min(200, cleaned.length())));
         
         // 最终验证：确保 SVG 完整
         if (!cleaned.contains("</svg>")) {
@@ -450,17 +475,56 @@ public class SvgPptxConverter {
         String text = allText.toString().trim();
         if (text.isEmpty()) return;
 
-        double textWidth = Math.max(text.length() * scaledFontSize * CHAR_WIDTH_FACTOR + TEXT_PADDING * 2, 50);
-        double textHeight = scaledFontSize * LINE_HEIGHT_FACTOR;
-        double anchorX = textAnchor != null && ("middle".equals(textAnchor) || "center".equals(textAnchor))
-                ? p[0] - textWidth / 2 : p[0];
+        // 计算文本宽度：中文字符约占1个fontSize宽度，英文约占0.6
+        double textWidth = 0;
+        for (char c : text.toCharArray()) {
+            if (c > 127) {
+                textWidth += scaledFontSize; // 中文字符
+            } else {
+                textWidth += scaledFontSize * CHAR_WIDTH_FACTOR; // 英文字符
+            }
+        }
+        textWidth = Math.max(textWidth + TEXT_PADDING * 3, 80);
         
-        // SVG y is baseline. POI anchor y is top edge.
-        // Baseline is usually around 70-75% down from the top of the box.
-        double anchorY = p[1] - (textHeight * 0.75);
+        // 计算文本高度：单行高度，加上上下padding
+        double lineHeight = scaledFontSize * 1.3; // 单行高度
+        double textHeight = lineHeight + TEXT_PADDING * 2;
+        
+        double anchorX;
+        double anchorY;
+        
+        // SVG y是baseline位置，POI anchor是top edge
+        // 对于中文文字，baseline到top的距离约为字体大小的0.65倍
+        double baselineToTop = scaledFontSize * 0.65;
+        
+        if (textAnchor != null && ("middle".equals(textAnchor) || "center".equals(textAnchor))) {
+            // 居中对齐：文本框居中放置，POI内部处理对齐
+            anchorX = p[0] - textWidth / 2;
+        } else if ("end".equals(textAnchor) || "right".equals(textAnchor)) {
+            // 右对齐
+            anchorX = p[0] - textWidth;
+        } else {
+            // 左对齐（默认）
+            anchorX = p[0];
+        }
+        
+        anchorY = p[1] - baselineToTop;
 
-        textBox.setAnchor(new Rectangle2D.Double(anchorX, anchorY,
-                Math.min(textWidth, SVG_WIDTH - anchorX - 20), textHeight));
+        // 边界检查：防止文本框超出画布
+        if (anchorX < 0) anchorX = 5;
+        if (anchorY < 0) anchorY = 5;
+        if (anchorX + textWidth > SVG_WIDTH) {
+            textWidth = SVG_WIDTH - anchorX - 5;
+        }
+        if (anchorY + textHeight > SVG_HEIGHT) {
+            textHeight = SVG_HEIGHT - anchorY - 5;
+        }
+        
+        textBox.setAnchor(new Rectangle2D.Double(anchorX, anchorY, textWidth, textHeight));
+        
+        // 设置文本框属性
+        textBox.setWordWrap(true);
+        textBox.setTextAutofit(XSLFTextShape.TextAutofit.NONE);
 
         XSLFTextParagraph para = textBox.addNewTextParagraph();
         para.setTextAlign(mapTextAlign(textAnchor));
