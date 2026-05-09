@@ -230,9 +230,9 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public RewriteResultDTO rewriteTextOnly(String text, String deviceId, int round) {
-        log.info("[快速降重] 轮次: {}, deviceId={}, 调用前查询剩余次数", round, deviceId);
+        log.info("[快速优化] 轮次: {}, deviceId={}, 调用前查询剩余次数", round, deviceId);
         int remaining = dailyUsageService.getRemaining(deviceId);
-        log.info("[快速降重] 轮次: {}, deviceId={}, 当前剩余: {}", round, deviceId, remaining);
+        log.info("[快速优化] 轮次: {}, deviceId={}, 当前剩余: {}", round, deviceId, remaining);
         if (remaining <= 0) {
             throw new RuntimeException("今日免费次数已用完，请先兑换");
         }
@@ -245,9 +245,9 @@ public class DocumentServiceImpl implements DocumentService {
         }
 
         try {
-        log.info("[快速降重] 轮次: {}, 输入长度: {} 字", round, text.length());
+        log.info("[快速优化] 轮次: {}, 输入长度: {} 字", round, text.length());
         String rewrittenText = callAiRewrite(text, round);
-        log.info("[快速降重] 轮次: {}, 输出长度: {} 字", round, rewrittenText.length());
+        log.info("[快速优化] 轮次: {}, 输出长度: {} 字", round, rewrittenText.length());
 
         RewriteResultDTO result = new RewriteResultDTO();
         result.setParagraphId("quick");
@@ -256,7 +256,7 @@ public class DocumentServiceImpl implements DocumentService {
         return result;
         } catch (Exception e) {
             if (round == 1) {
-                log.warn("[快速降重] 失败，回退次数: deviceId={}", deviceId);
+                log.warn("[快速优化] 失败，回退次数: deviceId={}", deviceId);
                 dailyUsageService.rollback(deviceId);
             }
             throw e;

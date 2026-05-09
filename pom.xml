@@ -15,7 +15,7 @@
     <artifactId>paper-polish</artifactId>
     <version>1.0.0</version>
     <name>paper-polish</name>
-    <description>Paper Polish - 论文降重润色工具</description>
+    <description>Paper Polish - 论文优化润色工具</description>
 
     <properties>
         <java.version>11</java.version>

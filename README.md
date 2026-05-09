@@ -1,4 +1,4 @@
-# PaperPolish Backend - 论文降重润色工具后端
+# PaperPolish Backend - 论文优化润色工具后端
 
 ## 技术栈
 - Spring Boot 2.7.18 + MyBatis-Plus 3.5.5

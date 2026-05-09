@@ -1,5 +1,5 @@
 -- ============================================
--- PaperPolish - 论文降重润色工具 数据库初始化脚本
+-- PaperPolish - 论文优化润色工具 数据库初始化脚本
 -- 适配 MySQL 5.7
 -- ============================================
 
@@ -20,7 +20,7 @@ CREATE TABLE `paper` (
     `latest_file_path`  VARCHAR(500)    NULL COMMENT '最新导出的Word路径',
     `status`            VARCHAR(20)     NOT NULL DEFAULT 'uploaded' COMMENT '状态：uploaded/parsed/finished',
     `paragraph_count`   INT             DEFAULT 0 COMMENT '段落总数',
-    `rewritten_count`   INT             DEFAULT 0 COMMENT '已降重段数',
+    `rewritten_count`   INT             DEFAULT 0 COMMENT '已优化段数',
     `created_at`        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at`        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`)
