@@ -69,8 +69,8 @@ ai:
 
 # 微信小程序配置
 wechat:
-  appid: wx100d25899c7b6812
-  secret: 6385971389d6d7a2e150c89ae5860bb4
+  appid: wx8e34745c9f31706c
+  secret: ca8655f2dbc6301da4c80596d0126447
 
 # JWT 配置
 jwt:
