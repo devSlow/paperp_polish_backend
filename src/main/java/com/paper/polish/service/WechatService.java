@@ -32,11 +32,17 @@ public class WechatService {
         if (accessToken != null && System.currentTimeMillis() < tokenExpireAt) {
             return accessToken;
         }
-        String url = String.format(
-                "https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=%s&secret=%s",
-                wechatConfig.getAppid(), wechatConfig.getSecret());
+        String url = "https://api.weixin.qq.com/cgi-bin/stable_token";
         try {
-            String response = restTemplate.getForObject(url, String.class);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(Map.of(
+                    "grant_type", "client_credential",
+                    "appid", wechatConfig.getAppid(),
+                    "secret", wechatConfig.getSecret(),
+                    "force_refresh", false
+            )), headers);
+            String response = restTemplate.postForObject(url, entity, String.class);
             Map<String, Object> result = objectMapper.readValue(response, Map.class);
             if (result.containsKey("errcode")) {
                 log.error("获取微信access_token失败: {}", response);
@@ -80,18 +86,18 @@ public class WechatService {
 
             byte[] result = response.getBody();
             if (result == null || result.length == 0) {
-                log.error("生成小程序二维码返回为空");
+                log.error("生成小程序二维码返回为空, scene={}", scene);
                 return null;
             }
             // 检查是否是错误信息（微信错误时返回JSON文本而非图片）
             String maybeJson = new String(result, java.nio.charset.StandardCharsets.UTF_8);
             if (maybeJson.startsWith("{")) {
-                log.error("生成小程序二维码失败: {}", maybeJson);
+                log.error("生成小程序二维码失败, scene={}: {}", scene, maybeJson);
                 return null;
             }
             return result;
         } catch (Exception e) {
-            log.error("生成小程序二维码异常", e);
+            log.error("生成小程序二维码异常, scene={}", scene, e);
             return null;
         }
     }
